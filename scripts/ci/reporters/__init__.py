@@ -54,6 +54,17 @@ class Reporter(Protocol):
         """
         ...
 
+    def error(self, title: str, text: str) -> List[str]:
+        """Render one standalone error annotation that is not a step outcome.
+
+        Added by milestone 0014 Story 04.0 Task 01 for the run-level report
+        (``run_report.py``): its single ``<n> legs failed: <list>`` line, the
+        only error annotation outside the RC1 per-step ones (plan E9
+        annotation budget). ``title`` and ``text`` are sanitised (CR-4) and
+        cut to 160 characters.
+        """
+        ...
+
     def begin_untrusted_block(self) -> List[str]:
         """Open a fence that stops the platform interpreting tool output (T-3)."""
         ...

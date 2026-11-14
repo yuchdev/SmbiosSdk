@@ -19,8 +19,10 @@
 # Legs: the matrix carries only the leg name; preset, build directory and
 # cache flavor come from scripts/ci/legs.json ("job": "sanitizers"), runner
 # labels from scripts/ci/pins.json (scripts/ci/tests/test_stage.py checks
-# both). Tiering (plan Q1): a push to a branch other than master runs only
-# linux-asan; every other event both legs. No Windows leg (no MSVC
+# both). Tiering (plan Q1, Story 04.0 Task 02): the matrix is the `legs`
+# input from ci.yml's plan job (scripts/ci/plan.py: linux-asan on a branch
+# push, macos-asan on a same-repo PR, both on a fork PR, master push, v* tag
+# or the nightly, none on docs-only changes). No Windows leg (no MSVC
 # sanitizers; C06 runs there in the build job), so each step runs once,
 # with python3. No failure-log upload: policy P15 (CR-10) allows `logs-*`
 # uploads only in stage-build.yml, and the old sanitizers job had none.
@@ -28,6 +30,17 @@ name: stage-sanitizers
 
 on:
   workflow_call:
+    inputs:
+      # Story 04.0 Task 02: the plan job's JSON leg list for this job
+      # (scripts/ci/plan.py, single-line JSON). ci.yml skips the job when
+      # the list is empty; the literal fallback below is this job's
+      # full-tier leg list (scripts/ci/legs.json), used only if no list is
+      # passed. scripts/ci/tests/test_stage.py keeps both equal.
+      legs:
+        description: JSON list of legs to run (from the plan job)
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -55,7 +68,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        leg: ${{ fromJSON(github.event_name == 'push' && github.ref_type == 'branch' && github.ref != 'refs/heads/master' && '["linux-asan"]' || '["linux-asan", "macos-asan"]') }}
+        leg: ${{ fromJSON(inputs.legs || '["linux-asan", "macos-asan"]') }}
     env:
       CI_JOB: sanitizers
       CI_LEG: ${{ matrix.leg }}
@@ -116,3 +129,39 @@ jobs:
         with:
           path: ${{ runner.temp }}/vcpkg-binary-cache
           key: ${{ fromJSON(steps.prepare.outputs.cache).key }}
+
+      # Story 04.0 Task 01 (plan E9): the job block (RC3 records + RC4 line,
+      # at most 30 lines / 4 KiB) into the job summary, and the same records
+      # as $CI_ARTIFACT_DIR/summary-sanitizers-<leg>.json for the run-level `report`
+      # job. The twin step runs on a failed or cancelled job and passes
+      # --job-failed, so a failure outside any recorded step (a timeout, a
+      # platform step) is never summarised as PASS.
+      - name: Job summary
+        id: summary
+        if: success() && steps.checkout.outcome == 'success'
+        run: python3 scripts/ci/stage.py summary
+        timeout-minutes: 2
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+
+      - name: Job summary (failed job)
+        id: summary-failed
+        if: (failure() || cancelled()) && steps.checkout.outcome == 'success'
+        run: python3 scripts/ci/stage.py summary --job-failed
+        timeout-minutes: 2
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+
+      # The summary artifact: one literal file, no log content, at most 8 KiB,
+      # 3-day retention (plan Q3). Read only by the `report` job of ci.yml.
+      - name: Upload job summary
+        id: upload-summary
+        if: always() && steps.checkout.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        timeout-minutes: 2
+        with:
+          name: summary-sanitizers-${{ matrix.leg }}
+          path: ${{ runner.temp }}/artifacts/summary-sanitizers-${{ matrix.leg }}.json
+          include-hidden-files: false
+          if-no-files-found: ignore
+          retention-days: 3

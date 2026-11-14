@@ -1,0 +1,21 @@
+# Policy-gate fixture: violates exactly P9 on any branch other than probe/**
+# (stray probe workflow); passes every rule on a probe/** branch.
+name: probe
+on:
+  push:
+    branches: ['probe/**']
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 10
+        with:
+          persist-credentials: false
+      - name: Print env
+        run: python3 scripts/ci/stage.py lint --only env
+        timeout-minutes: 10

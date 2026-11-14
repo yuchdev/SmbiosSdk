@@ -28,6 +28,8 @@
     }
   },
   "steps": {
+    "plan/checkout": 2,
+    "plan/plan": 1,
     "lint/checkout": 3,
     "lint/stage": 8,
     "build/checkout": 3,
@@ -55,6 +57,25 @@
     "gui/compile-win": 18,
     "gui/test": 6,
     "gui/test-win": 6,
-    "gui/cache-save": 5
+    "gui/cache-save": 5,
+    "lint/summary": 2,
+    "lint/summary-failed": 2,
+    "lint/upload-summary": 2,
+    "build/summary": 2,
+    "build/summary-failed": 2,
+    "build/summary-win": 2,
+    "build/summary-failed-win": 2,
+    "build/upload-summary": 2,
+    "sanitizers/summary": 2,
+    "sanitizers/summary-failed": 2,
+    "sanitizers/upload-summary": 2,
+    "gui/summary": 2,
+    "gui/summary-failed": 2,
+    "gui/summary-win": 2,
+    "gui/summary-failed-win": 2,
+    "gui/upload-summary": 2,
+    "report/checkout": 2,
+    "report/download": 2,
+    "report/report": 2
   }
 }

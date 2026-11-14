@@ -1,7 +1,7 @@
 # 02 - Triggers, concurrency and matrix tiering
 
 **Parent story:** [README.md](README.md)
-**Status:** ⬜ Not started
+**Status:** ✅ Complete locally (real-run proofs after push)
 **Depends on:** maintainer decision Q1
 
 ## Objective
@@ -83,6 +83,17 @@ def matrix_for(event: str, ref: str, classification: str, jobs: str, os: str) ->
 
 ## Success criteria
 
-- [ ] No leg runs twice for one commit (push + same-repo PR), and every leg runs at least once for a commit that has an open PR to `master`.
-- [ ] Superseded non-`master` runs are cancelled.
-- [ ] The tier table in `docs/dev/ci.md` matches the ruling and `matrix_for`.
+- [x] No leg runs twice for one commit (push + same-repo PR), and every leg runs at least once for a commit that has an open PR to `master`.
+- [x] Superseded non-`master` runs are cancelled.
+- [x] The tier table in `docs/dev/ci.md` matches the ruling and `matrix_for`.
+
+## As-built notes (2026-11-14, local part)
+
+Maintainer rulings and review decisions applied on top of the spec above:
+
+- **No `workflow_dispatch`** (Q1 ruling): no dispatch trigger or inputs; `matrix_for(event, ref, classification, *, pr_same_repo, data)` has no `jobs`/`os` parameters; an unknown event (including `manual`) exits 2.
+- **Non-`master` pushes are classified against the merge base with `origin/master`**, not `github.event.before`, so a docs-only push cannot cancel a code push's run and leave the head commit without its Linux legs (the same-repo PR run relies on them, `covered by push run`).
+- **Tags are always `full`**; `matrix_for` forces it.
+- **P10 extension:** `github.event.pull_request.head.repo.full_name == github.repository` is allowed only as that exact comparison (`ENV_EXPRESSIONS_EXACT`), to tell same-repo PRs from forks; the raw context stays forbidden.
+- New neutral names `CI_PR_SAME_REPO`, `CI_PLAN`; package/verify/publish show `not run: stage not defined` until milestone 0012.
+- **Runner-only, still to prove:** `if:`/`fromJSON` behaviour with an empty leg list, concurrency cancellation, the docs-only lint-only run, and `refs/remotes/origin/master` being present after checkout.

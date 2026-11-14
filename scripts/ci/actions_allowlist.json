@@ -46,6 +46,15 @@
       "justification": "Uploads configure/build logs on failure (plan Q3, 3-day retention) and stage hand-off artifacts.",
       "teamcity_equivalent": "artifact paths (built in)",
       "tag_commit_verified_on": "2026-11-13"
+    },
+    {
+      "action": "actions/download-artifact",
+      "sha": "9000827ccba6bdab643e8b6fd33ac0654aef8333",
+      "version": "v8.0.2",
+      "kind": "node",
+      "justification": "Downloads this run's summary-* artifacts (no log content, at most 8 KiB each) into the report job of ci.yml (Story 04.0 Task 01); current run only, no token input.",
+      "teamcity_equivalent": "artifact dependencies (built in)",
+      "tag_commit_verified_on": "2026-11-14"
     }
   ]
 }

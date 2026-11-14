@@ -79,6 +79,15 @@ NAMES: Dict[str, EnvName] = {
                 "github.sha", "%build.vcs.number%"),
         EnvName("CI_BASE_COMMIT", "diff base for tiering (empty means full)",
                 "PR base sha / github.event.before", "last-built revision, or empty"),
+        EnvName("CI_PR_SAME_REPO",
+                "true when a PR's head branch is in this repository (its push run covered "
+                "the push tier); false or empty otherwise (milestone 0014 Story 04.0 Task 02)",
+                "the whole-expression comparison github.event.pull_request.head.repo.full_name "
+                "== github.repository (policy P10 allows only that exact expression)",
+                "empty (no PR builds), or a literal per PR configuration"),
+        EnvName("CI_PLAN", "the plan step's single-line JSON plan, read back by the report "
+                "(milestone 0014 Story 04.0 Task 02)",
+                "needs.plan.outputs.plan", "the plan step's setParameter value"),
         EnvName("CI_JOB", "stage job",
                 "job id", "build configuration id"),
         EnvName("CI_LEG", "leg (linux-x64, ...)",

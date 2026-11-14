@@ -327,25 +327,51 @@ class TierTests(unittest.TestCase):
         raise AssertionError("no branch of the CI_EVENT chain applied")
 
     def test_WorkflowMatrixMatchesLegsJsonTiers(self) -> None:
+        """Story 04.0 Task 02: the matrix is the plan's leg list, bounded by legs.json.
+
+        Each stage workflow's matrix is ``fromJSON(inputs.legs || '<list>')``:
+        the literal fallback must be the job's full-tier legs, ``ci.yml`` must
+        pass ``needs.plan.outputs.<job>`` as ``legs``, and for every event
+        ``ci.yml`` is triggered by, the plan's list for the job (from
+        ``plan.matrix_for`` on the neutral event the workflow maps) must be
+        within that fallback, equal to the Q1 tier's legs of the job (for a
+        same-repo PR: minus the push tier), and every scheduled leg must pass
+        stage.py's own tier check (S3-5), so no scheduled leg exits 2.
+        """
+        import plan
+        ci = gate.load_yaml((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
+        triggers = set(gate._triggers(ci))
+        event_expr = gate._expressions(str(ci["jobs"]["plan"]["env"]["CI_EVENT"]))[0]
+        full = tuple(self.legs["tiers"]["full"])
+        push_branch = set(self.legs["tiers"]["push_branch"])
         for job, workflow in JOB_WORKFLOWS.items():
             root = gate.load_yaml((WORKFLOWS / workflow).read_text(encoding="utf-8"))
-            event_expr = gate._expressions(str(root["env"]["CI_EVENT"]))[0]
             leg_expr = gate._expressions(str(root["jobs"][job]["strategy"]["matrix"]["leg"]))[0]
-            m = re.fullmatch(r"\s*fromJSON\((.+) && '(\[[^']*\])' \|\| '(\[[^']*\])'\)\s*",
-                             leg_expr)
+            m = re.fullmatch(r"\s*fromJSON\(inputs\.legs \|\| '(\[[^']*\])'\)\s*", leg_expr)
             self.assertIsNotNone(m, f"{workflow}: matrix leg expression changed shape")
-            cond, narrow, wide = m.group(1), json.loads(m.group(2)), json.loads(m.group(3))
+            fallback = tuple(json.loads(m.group(1)))
+            job_full = tuple(leg for leg in full
+                             if self.legs["legs"][leg].get("job", "build") == job)
+            self.assertEqual(fallback, job_full, f"{workflow}: fallback is not the full tier")
+            self.assertIn("legs", root["on"]["workflow_call"]["inputs"])
+            self.assertEqual(str(ci["jobs"][job]["with"]["legs"]),
+                             "$" + "{{ needs.plan.outputs." + job + " }}")
             for name, github in gate.SCENARIOS.items():
-                with self.subTest(job=job, scenario=name):
-                    narrowed = gate._truth(gate._Evaluator(cond, github).run())
-                    self.assertIn(narrowed, (True, False))
-                    workflow_legs = tuple(narrow if narrowed else wide)
-                    event = self._neutral_event(event_expr, github)
-                    self.assertIn(event, stage.EVENTS)
-                    tier = stage.tier_legs(event, github["ref"], self.legs)
-                    self.assertEqual(workflow_legs, tuple(
-                        leg for leg in tier
-                        if self.legs["legs"][leg].get("job", "build") == job))
+                if github["event_name"] not in triggers or name == "push-tag-legacy":
+                    continue  # not a trigger of ci.yml (no dispatch; tags are v* only)
+                event = self._neutral_event(event_expr, github)
+                for same_repo in ((True, False) if event == "pr" else (False,)):
+                    with self.subTest(job=job, scenario=name, same_repo=same_repo):
+                        planned = tuple(plan.matrix_for(event, github["ref"], "full",
+                                                        pr_same_repo=same_repo)[job])
+                        self.assertTrue(set(planned) <= set(fallback))
+                        tier = stage.tier_legs(event, github["ref"], self.legs)
+                        want = tuple(leg for leg in tier if leg in job_full and not (
+                            event == "pr" and same_repo and leg in push_branch))
+                        self.assertEqual(planned, want)
+                        for leg in planned:
+                            self.assertTrue(stage.leg_selected(leg, event, github["ref"],
+                                                               self.legs))
 
 
 class LegsDataTests(unittest.TestCase):
@@ -400,8 +426,8 @@ class LegsDataTests(unittest.TestCase):
             for body in gate.run_blocks(WORKFLOWS / name):
                 with self.subTest(workflow=name, run=body):
                     self.assertRegex(body.strip(),
-                                     r"^python3? scripts/ci/stage\.py (lint|build|test)"
-                                     r"( --only [a-z-]+)?$")
+                                     r"^python3? scripts/ci/stage\.py ((lint|build|test)"
+                                     r"( --only [a-z-]+)?|summary( --job-failed)?)$")
 
 
 class StepTests(unittest.TestCase):

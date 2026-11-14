@@ -29,6 +29,7 @@ env:
   CI_REF_NAME: ${{ github.ref_name }}
   CI_COMMIT: ${{ github.sha }}
   CI_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
+  CI_PR_SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
   CI_WORKSPACE: ${{ github.workspace }}
 jobs:
   lint:

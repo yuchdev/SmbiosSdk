@@ -166,11 +166,11 @@ class MainEndToEndTests(_TmpCase):
                 handed = (self.tmp / print_env.ENV_LINE_FILE).read_text(encoding="utf-8")
                 self.assertEqual(handed, lines[0] + "\n")
 
-    def test_SummaryFirstLineIsTheEnvLine(self) -> None:
+    def test_EnvLineIsNotPublishedToTheSummaryItself(self) -> None:
+        """Story 04.0: job_summary.py puts the env line in its block; print_env must not repeat it."""
         proc = self._run("github")
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        summary = (self.tmp / "summary.md").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(summary[0], proc.stdout.decode("utf-8").splitlines()[0])
+        self.assertFalse((self.tmp / "summary.md").exists(), "print_env wrote the summary")
 
 
 class HandOffFileTests(_TmpCase):

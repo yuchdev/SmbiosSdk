@@ -6,8 +6,8 @@ characters::
 
     env: <job>/<leg> image=<CI_IMAGE> | cmake <v> | ctest <v> | ninja <v|-> | cxx <id> <v> | python <v> | vcpkg <sha12> | cache <exact|partial|miss|->
 
-and, on a CI platform, also writes it as the first line of the job summary.
-Both go through the reporter backend (``Reporter.info`` / ``job_summary``,
+(the job summary block, built by ``job_summary.py``, repeats it from the hand-off file).
+Printing goes through the reporter backend (``Reporter.info``,
 ADR 0005); this script never prints directly. It hands the same line to later
 steps (RC3 records, Story 04.0's ``job_summary.py``) as the file
 :data:`ENV_LINE_FILE` under ``$CI_TEMP_DIR``: created mode 0600, opened with
@@ -275,8 +275,8 @@ def main(argv: Sequence[str]) -> int:
         lines += reporter.info(f"info: print_env: env line not handed off "
                                f"({type(exc).__name__})")
     ci_step._emit(lines)  # the runner's single stdout writer (CR-4 single emitter)
-    if reporter.name != "plain":  # plain's summary target is stdout, already printed
-        reporter.job_summary(lines[0])
+    # The summary block (job_summary.py, Story 04.0) carries this line itself, from
+    # the hand-off file; publishing it here too would print it twice per job.
     return 0
 
 

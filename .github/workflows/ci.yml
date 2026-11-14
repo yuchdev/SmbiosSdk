@@ -5,15 +5,28 @@
 # Runs side by side with the old ci.yml until the Story 03.0 Task 04
 # cutover renames this file to ci.yml.
 #
-# Triggers: the old ci.yml's push + pull_request, minus probe/** branches
-# (Story 04.0 Task 03), plus v* tags (a release is this pipeline on a tag,
-# ADR 0005 D7; the legacy -DGIT_TAG tags never match, P12) and a nightly
-# schedule (plan Q1). No workflow_dispatch (maintainer ruling, Q1 as
-# applied here). Tiering (Q1): a push to a branch other than master runs
-# lint + the Linux build, sanitizer and gui legs; pull requests, master pushes,
-# v* tags and the nightly run the full matrix. The leg lists live in the
-# stage workflows' matrices and in scripts/ci/legs.json "tiers" (kept equal
-# by scripts/ci/tests/test_stage.py).
+# Triggers (Story 04.0 Task 02, plan E7): push to every branch except
+# probe/** (Story 04.0 Task 03), pull requests to master, v* tags (a release
+# is this pipeline on a tag, ADR 0005 D7; the legacy -DGIT_TAG tags never
+# match, P12) and a nightly schedule. No workflow_dispatch (maintainer
+# ruling). No paths:/paths-ignore: filters: a workflow skipped by
+# path never reports (plan Q5), so docs-only runs are classified inside the
+# run by the `plan` job and the skipped legs are reported.
+#
+# Tiering: the `plan` job (scripts/ci/plan.py through `stage.py plan`)
+# classifies the changes (docs or full) and applies the tier table of
+# docs/dev/ci.md to scripts/ci/legs.json "tiers": docs-only changes run lint
+# only; a push to a branch other than master runs lint + the three Linux legs;
+# a same-repo PR runs only the legs that push tier did not run (its push run
+# already reports the Linux legs on the same commit); a fork PR, a master
+# push, a v* tag and the nightly run the full matrix. Its JSON outputs feed
+# each leg job's `legs` input (fromJSON in the stage workflow); a job whose
+# list is empty is skipped with `if:` (an empty matrix is an error). `lint`
+# always runs.
+#
+# Concurrency: one group per PR (or per ref for pushes, tags and the
+# schedule); a newer run cancels a superseded one, except on master and on
+# tags, which are never cancelled.
 #
 # Environment: the neutral CI_* mapping (ADR 0005) is in each stage
 # workflow, because a caller's `env:` does not reach a called workflow.
@@ -24,27 +37,151 @@ on:
     branches-ignore: ['probe/**']
     tags: ['v*']
   pull_request:
+    branches: [master]
   schedule:
     - cron: '17 3 * * *'
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' && !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
+  # Story 04.0 Task 02 (plan E7): classify_changes.py + the tier table. Its
+  # outputs are single-line JSON written only through Reporter.set_output()
+  # (CR-6/CR-8); every input is re-validated by plan.py (exit 2 on anything
+  # unknown). Full history (fetch-depth 0 also fetches every branch, so
+  # refs/remotes/origin/master exists): a push to a branch other than master
+  # is diffed against its merge base with origin/master, a master or tag push
+  # against the event's `before`, a PR against its base. A base that cannot be
+  # resolved (classify_changes.py tries one credential-less fetch of master)
+  # is classified `full`.
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      sanitizers: ${{ steps.plan.outputs.sanitizers }}
+      gui: ${{ steps.plan.outputs.gui }}
+      package: ${{ steps.plan.outputs.package }}
+      verify: ${{ steps.plan.outputs.verify }}
+      publish: ${{ steps.plan.outputs.publish }}
+      plan: ${{ steps.plan.outputs.plan }}
+    env:
+      CI_PLATFORM: github
+      CI_REPORTER: github
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+      CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      CI_EVENT: ${{ github.ref_type == 'tag' && 'tag' || github.event_name == 'pull_request' && 'pr' || github.event_name == 'workflow_dispatch' && 'manual' || github.event_name }}
+      CI_REF: ${{ github.ref }}
+      CI_REF_NAME: ${{ github.ref_name }}
+      CI_COMMIT: ${{ github.sha }}
+      CI_BASE_COMMIT: ${{ github.event.pull_request.base.sha || github.event.before }}
+      CI_PR_SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+      CI_WORKSPACE: ${{ github.workspace }}
+      CI_JOB: plan
+      CI_LEG: linux
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Plan
+        id: plan
+        run: python3 scripts/ci/stage.py plan
+        timeout-minutes: 1
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+
   lint:
     uses: ./.github/workflows/stage-lint.yml
 
   build:
-    needs: lint
+    needs: [lint, plan]
+    if: needs.plan.outputs.build != '[]'
     uses: ./.github/workflows/stage-build.yml
+    with:
+      legs: ${{ needs.plan.outputs.build }}
 
   # Story 03.0 Task 02: inventory C12-C14 (ASan + fatal UBSan, Linux/macOS).
   sanitizers:
-    needs: lint
+    needs: [lint, plan]
+    if: needs.plan.outputs.sanitizers != '[]'
     uses: ./.github/workflows/stage-sanitizers.yml
+    with:
+      legs: ${{ needs.plan.outputs.sanitizers }}
 
   # Story 03.0 Task 03: inventory C15-C20 (GUI build; the merge-blocking
   # R-7 hook-string and R-8 local-tier-absent guards).
   gui:
-    needs: lint
+    needs: [lint, plan]
+    if: needs.plan.outputs.gui != '[]'
     uses: ./.github/workflows/stage-gui.yml
+    with:
+      legs: ${{ needs.plan.outputs.gui }}
+
+  # Story 04.0 Task 01 (plan E9): one run-level table of at most 40 lines
+  # from the summary-<job>-<leg> artifacts every job uploads, and, when a
+  # leg failed or has no record, the single run-level error annotation.
+  # Legs and stages come from the plan job's `plan` output (CI_PLAN,
+  # re-validated by plan.parse_plan): a leg the plan does not run shows
+  # `not run: tier` or `not run: covered by push run`, a missing artifact of
+  # a planned leg `no record` (never PASS); the milestone 0012 stages show
+  # `not run: stage not defined`.
+  report:
+    name: report
+    needs: [plan, lint, build, sanitizers, gui]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      CI_PLATFORM: github
+      CI_REPORTER: github
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+      CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      CI_EVENT: ${{ github.ref_type == 'tag' && 'tag' || github.event_name == 'pull_request' && 'pr' || github.event_name == 'workflow_dispatch' && 'manual' || github.event_name }}
+      CI_REF: ${{ github.ref }}
+      CI_REF_NAME: ${{ github.ref_name }}
+      CI_COMMIT: ${{ github.sha }}
+      CI_WORKSPACE: ${{ github.workspace }}
+      CI_PLAN: ${{ needs.plan.outputs.plan }}
+      CI_JOB: report
+      CI_LEG: linux
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
+        with:
+          persist-credentials: false
+
+      # Every summary-* artifact of this run into one directory (each file
+      # is already named summary-<job>-<leg>.json).
+      - name: Download job summaries
+        id: download
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with:
+          pattern: summary-*
+          path: ${{ runner.temp }}/summaries
+          merge-multiple: true
+
+      - name: Run report
+        id: report
+        run: python3 scripts/ci/stage.py report
+        timeout-minutes: 2
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}

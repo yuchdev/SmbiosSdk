@@ -18,12 +18,14 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import re
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Dict, List, Optional
+from unittest import mock
 
 from ci_test_support import CI_DIR, FIXTURES
 
@@ -55,10 +57,11 @@ def policy_for(case_dir: Path, **overrides: Path) -> gate.Policy:
     return gate.load_policy(files)
 
 
-def run_case(case_dir: Path, **overrides: Path) -> List[gate.Violation]:
-    """Run every non-script rule on the workflows in ``case_dir``."""
+def run_case(case_dir: Path, branch: Optional[str] = None, **overrides: Path
+             ) -> List[gate.Violation]:
+    """Run every non-script rule on the workflows in ``case_dir`` (``branch``: P9 probe rule)."""
     return gate.run_gate(sorted(case_dir.glob("*.yml")), policy=policy_for(case_dir, **overrides),
-                         workflows_dir=case_dir, scripts_dir=None)
+                         workflows_dir=case_dir, scripts_dir=None, branch=branch)
 
 
 def cli(args: List[str]) -> tuple:
@@ -116,6 +119,29 @@ class OneViolationPerRule(unittest.TestCase):
                      "p15_cache_in_verify", "p15_logs_directory", "p15_logs_glob",
                      "p15_upload_other_name_directory"):
             self.assertTrue((WORKFLOW_FIXTURES / name).is_dir(), name)
+
+    def test_SameRepoComparisonIsTheOnlyHeadRepoUse(self) -> None:
+        """P10 (Story 04.0 Task 02): only the whole boolean comparison is allowed in env:."""
+        ok = "github.event.pull_request.head.repo.full_name == github.repository"
+        for expr, allowed in ((ok, True), ("  " + ok.replace(" == ", "  ==  ") + " ", True),
+                              ("github.event.pull_request.head.repo.full_name", False),
+                              (ok + " && github.head_ref", False),
+                              ("format('{0}', github.event.pull_request.head.repo.full_name)",
+                               False)):
+            with self.subTest(expr=expr), tempfile.TemporaryDirectory() as tmp:
+                case = Path(tmp) / "case"
+                shutil.copytree(WORKFLOW_FIXTURES / "p10_head_repo_name_raw", case)
+                path = case / "ci.yml"
+                text = path.read_text(encoding="utf-8")
+                old = EXPR + " github.event.pull_request.head.repo.full_name }}"
+                path.write_text(text.replace(old, EXPR + expr + "}}"), encoding="utf-8")
+                found = run_case(case)
+                rules = [v.rule for v in found]
+                if allowed:
+                    self.assertEqual(rules, [], [v.render() for v in found])
+                else:
+                    self.assertTrue(rules and set(rules) == {"P10"}, rules)
+                    self.assertTrue(any("head.repo.full_name" in v.actual for v in found))
 
     def test_DiscrepancyNamesTheOffendingValue(self) -> None:
         cases = {"p3_latest_label": "ubuntu-latest", "p10_head_ref": "github.head_ref",
@@ -408,6 +434,204 @@ class P15UploadEveryName(_TmpCase):
         for retention in ("1", "3"):
             with self.subTest(retention=retention):
                 self.assertEqual(self.upload_case("gui-logs", "a/gui.log", retention), [])
+
+
+REPO_ROOT = CI_DIR.parents[1]
+PROBE_TEMPLATE = REPO_ROOT / "docs" / "dev" / "ci-probe-template.yml"
+STRAY_PROBE = WORKFLOW_FIXTURES / "p9_stray_probe"
+
+
+def _template_job_examples() -> List[str]:
+    """Return the commented single-job ``jobs:`` blocks of the probe template, uncommented."""
+    blocks: List[str] = []
+    current: Optional[List[str]] = None
+    for line in PROBE_TEMPLATE.read_text(encoding="utf-8").split("\n"):
+        if line == "# jobs:":
+            current = ["jobs:"]
+            blocks.append("")
+        elif current is not None and line.startswith("#   "):
+            current.append(line[2:])
+        elif current is not None:
+            blocks[-1] = "\n".join(current) + "\n"
+            current = None
+    return blocks
+
+
+class ProbeWorkflows(_TmpCase):
+    """P9 probe rule and the probe template (milestone 0014 Story 04.0 Task 03).
+
+    Type: unit (no network, no workflow run). Scenario: a ``probe-*.yml`` in
+    the workflows directory on a non-probe branch (stray), on a ``probe/**``
+    branch (allowed and fully checked), and the shipped template plus each of
+    its commented single-job callers run through the gate as a fixture.
+    Boundaries: ``probe/`` without a topic, pull-request and tag refs, a tag
+    named ``probe/...``, CI without ``CI_REF``, a local detached HEAD.
+    On failure first check: ``_name_violation``/``current_branch`` in
+    ``scripts/ci/check_workflow_policy.py``; for a template failure, which rule
+    the rendered line names (the template must follow every rule).
+    """
+
+    def probe_dir(self, text: str, name: str = "probe-template.yml") -> Path:
+        case = self.tmp / "wf"
+        shutil.rmtree(case, ignore_errors=True)
+        case.mkdir()
+        (case / name).write_text(text, encoding="utf-8")
+        return case
+
+    def gate_dir(self, case: Path, branch: Optional[str]) -> List[str]:
+        """Run the gate as lint.py does: nothing named, the directory scan finds the probe."""
+        found = gate.run_gate([], policy=gate.load_policy(), workflows_dir=case,
+                              scripts_dir=None, branch=branch)
+        return [v.render() for v in found]
+
+    # -- P9 stray probe -------------------------------------------------------
+    def test_StrayProbeOnNonProbeBranchIsOneP9(self) -> None:
+        for branch in (None, "feature", "master", "probe", "probe/", "xprobe/x"):
+            with self.subTest(branch=branch):
+                (v,) = run_case(STRAY_PROBE, branch=branch)
+                self.assertEqual((v.rule, v.expected, v.actual),
+                                 ("P9", "stray probe workflow: 0", "1 (probe-x.yml)"))
+                self.assertIn("P9: expected stray probe workflow: 0 -> actual 1 (probe-x.yml)",
+                              v.render())
+
+    def test_StrayProbeFoundByDirectoryScan(self) -> None:
+        """Regression: lint.py never names the probe file; the directory scan must catch it."""
+        case = self.probe_dir((STRAY_PROBE / "probe-x.yml").read_text(encoding="utf-8"))
+        found = self.gate_dir(case, "milestone-0014-ci-rework")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("stray probe workflow", found[0])
+
+    def test_ProbeAllowedOnProbeBranch(self) -> None:
+        self.assertEqual([v.render() for v in run_case(STRAY_PROBE, branch="probe/x")], [])
+        case = self.probe_dir((STRAY_PROBE / "probe-x.yml").read_text(encoding="utf-8"))
+        self.assertEqual(self.gate_dir(case, "probe/runner-versions"), [])
+
+    def test_ProbeOnProbeBranchGetsEveryRule(self) -> None:
+        """A probe file found by the directory scan is checked, not just named."""
+        text = (STRAY_PROBE / "probe-x.yml").read_text(encoding="utf-8")
+        self.assertIn("\n    timeout-minutes: 10\n    steps:", text)
+        case = self.probe_dir(text.replace("\n    timeout-minutes: 10\n    steps:",
+                                           "\n    steps:"))
+        found = self.gate_dir(case, "probe/x")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("P4: expected timeout-minutes", found[0])
+
+    def test_ProbeTriggerIsPushToProbeBranchesOnly(self) -> None:
+        text = (STRAY_PROBE / "probe-x.yml").read_text(encoding="utf-8")
+        good = "on:\n  push:\n    branches: ['probe/**']\n"
+        self.assertIn(good, text)
+        for bad in ("on:\n  push:\n    branches: ['probe/**']\n  workflow_dispatch:\n",
+                    "on:\n  push:\n    branches: ['**']\n",
+                    "on:\n  push:\n    branches: ['probe/**']\n    tags: ['v*']\n",
+                    "on:\n  pull_request:\n"):
+            with self.subTest(trigger=bad):
+                found = self.gate_dir(self.probe_dir(text.replace(good, bad)), "probe/x")
+                self.assertEqual(len(found), 1, found)
+                self.assertIn("P9: expected on: push: branches: [probe/**] only", found[0])
+
+    def test_OtherFileNamesStillRejectedOnProbeBranch(self) -> None:
+        (v,) = run_case(WORKFLOW_FIXTURES / "p9_release_yml", branch="probe/x")
+        self.assertEqual((v.rule, v.actual), ("P9", "release.yml"))
+
+    def test_AllowedFileNamesDoNotIncludeProbes(self) -> None:
+        self.assertNotIn("probe-*.yml", gate.ALLOWED_WORKFLOW_FILES)
+        (v,) = gate.check_workflow(STRAY_PROBE / "probe-x.yml", policy=gate.load_policy())
+        self.assertEqual((v.rule, v.expected), ("P9", "stray probe workflow: 0"))
+        self.assertEqual(gate.allowed_files_for("probe/x"),
+                         gate.ALLOWED_WORKFLOW_FILES + ("probe-*.yml",))
+        self.assertEqual(gate.allowed_files_for("feature"), gate.ALLOWED_WORKFLOW_FILES)
+
+    # -- branch detection -----------------------------------------------------
+    def branch_with(self, env: Dict[str, str], git: Optional[str] = "local-branch"
+                    ) -> Optional[str]:
+        full = {"CI_REF": "", "CI_PLATFORM": ""}
+        full.update(env)
+        with mock.patch.dict(os.environ, full):
+            return gate.current_branch(lambda: git)
+
+    def test_BranchFromNeutralCiRef(self) -> None:
+        cases = {"refs/heads/probe/x": "probe/x", "refs/heads/master": "master",
+                 "refs/pull/3/merge": None, "refs/tags/probe/x": None, "refs/heads/": None,
+                 "probe/x": None}
+        for ref, want in cases.items():
+            with self.subTest(ref=ref):
+                self.assertEqual(self.branch_with({"CI_REF": ref, "CI_PLATFORM": "github"}), want)
+
+    def test_CiRunWithoutRefIsStrict(self) -> None:
+        self.assertIsNone(self.branch_with({"CI_PLATFORM": "github"}, git="probe/x"))
+
+    def test_LocalRunAsksGit(self) -> None:
+        self.assertEqual(self.branch_with({}, git="probe/x"), "probe/x")
+        self.assertIsNone(self.branch_with({}, git=None))  # detached HEAD or no git
+
+    def test_CliReadsTheBranchFromCiRef(self) -> None:
+        case = self.probe_dir((STRAY_PROBE / "probe-x.yml").read_text(encoding="utf-8"))
+        for ref, rc in (("refs/heads/probe/x", 0), ("refs/heads/master", 1),
+                        ("refs/pull/9/merge", 1)):
+            with self.subTest(ref=ref), mock.patch.dict(os.environ, {"CI_REF": ref}):
+                code, lines = cli(["--no-scripts", "--workflows-dir", str(case)])
+                self.assertEqual(code, rc, lines)
+                self.assertEqual(len(lines), 1, lines)
+                if rc:
+                    self.assertIn("stray probe workflow: 0 -> actual 1", lines[0])
+
+    # -- the shipped template ---------------------------------------------------
+    def test_TemplatePassesEveryRuleOnAProbeBranch(self) -> None:
+        text = PROBE_TEMPLATE.read_text(encoding="utf-8")
+        case = self.probe_dir(text)
+        self.assertEqual(self.gate_dir(case, "probe/template"), [])
+        self.assertEqual([v.render() for v in gate.check_workflow(
+            case / "probe-template.yml", gate.allowed_files_for("probe/template"),
+            gate.load_policy())], [])
+
+    def test_TemplateIsStrayOffAProbeBranch(self) -> None:
+        found = self.gate_dir(self.probe_dir(PROBE_TEMPLATE.read_text(encoding="utf-8")),
+                              "master")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("stray probe workflow", found[0])
+
+    def test_TemplateMatrixIsThePinnedLabels(self) -> None:
+        root = gate.load_yaml(PROBE_TEMPLATE.read_text(encoding="utf-8"))
+        (job,) = root["jobs"].values()
+        pins = json.loads(gate.PolicyFiles.pins.read_text(encoding="utf-8"))
+        self.assertEqual(list(job["strategy"]["matrix"]["os"]), list(pins["runners"].values()))
+
+    def test_TemplateHeaderAndProbeSteps(self) -> None:
+        text = PROBE_TEMPLATE.read_text(encoding="utf-8")
+        self.assertIn("# Probe rules:", text)
+        for n in range(1, 5):
+            self.assertIn(f"#   {n}. ", text)
+        self.assertEqual(text.count("# PROBE STEPS"), 1)
+        self.assertNotIn("workflow_dispatch:", text)
+
+    def test_TemplateSingleJobCallersAreCorrect(self) -> None:
+        """Each commented single-job caller passes the gate and asks for a leg stage.py runs.
+
+        On a ``probe/**`` push stage.py applies the branch-push tier, so a leg
+        outside ``legs.json`` ``tiers.push_branch`` would exit 2.
+        """
+        legs = json.loads((CI_DIR / "legs.json").read_text(encoding="utf-8"))
+        text = PROBE_TEMPLATE.read_text(encoding="utf-8")
+        head = text[:text.index("\njobs:\n") + 1]
+        examples = _template_job_examples()
+        used = set()
+        for block in examples:
+            with self.subTest(block=block.split("\n")[1]):
+                self.assertEqual(self.gate_dir(self.probe_dir(head + block), "probe/x"), [])
+                (job_id, job), = gate.load_yaml(block)["jobs"].items()
+                uses = str(job["uses"])
+                used.add(uses)
+                stage = gate.load_yaml((REPO_ROOT / uses).read_text(encoding="utf-8"))
+                inputs = stage["on"]["workflow_call"]
+                if "with" not in job:
+                    self.assertFalse(isinstance(inputs, dict) and inputs.get("inputs"), uses)
+                    continue
+                self.assertIn("legs", inputs["inputs"])
+                for leg in json.loads(str(job["with"]["legs"])):
+                    self.assertIn(leg, legs["tiers"]["push_branch"])
+                    self.assertEqual(legs["legs"][leg].get("job", "build"), job_id)
+        self.assertEqual(used, {f"./.github/workflows/{p.name}" for p in
+                                (REPO_ROOT / ".github" / "workflows").glob("stage-*.yml")})
 
 
 class Guards(unittest.TestCase):

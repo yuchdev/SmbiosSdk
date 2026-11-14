@@ -93,6 +93,13 @@ class TeamcityReporter:
         body = f"{clean_text(title)}: {clean_text(text)}"
         return [f"##teamcity[message text='{escape_value(body)}' status='WARNING']"]
 
+    def error(self, title: str, text: str) -> List[str]:
+        """Render one ``buildProblem`` with identity ``title`` (escaped, neutralised; CR-4)."""
+        body = f"{clean_text(title)}: {clean_text(text)}"
+        identity = clean_text(title)[:_IDENTITY_MAX]
+        return [f"##teamcity[buildProblem description='{escape_value(body)}' "
+                f"identity='{escape_value(identity)}']"]
+
     def begin_untrusted_block(self) -> List[str]:
         """Disable service-message processing."""
         return ["##teamcity[disableServiceMessages]"]

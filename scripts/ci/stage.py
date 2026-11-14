@@ -4,6 +4,9 @@
 One workflow step is one invocation of this command::
 
     python3 scripts/ci/stage.py <lint|build|test|package|verify|publish> [--leg <leg>] [--only <step>]
+    python3 scripts/ci/stage.py summary [--leg <leg>] [--job-failed]
+    python3 scripts/ci/stage.py report
+    python3 scripts/ci/stage.py plan
 
 Every sub-step goes through the ``ci_step`` library (RC1-RC3), so a green
 sub-step prints exactly one ``ok:``/``info:``/``skip:`` line (plus the RC4
@@ -74,6 +77,23 @@ Trigger tiering (plan Q1): a leg not selected for ``$CI_EVENT``/``$CI_REF``
 prints one ``skip:`` line and exits 0 (the workflow does not start such legs;
 this is the portable self-skip of ADR 0005 "Trigger tiering").
 
+Utility commands (Story 04.0 Task 01, plan E9), also one workflow line each:
+    ``summary [--job-failed]`` - the last step of every job (``job_summary.py``):
+    the job block of ``$CI_JOB``/``$CI_LEG`` (``--leg``) into the job summary
+    and ``$CI_ARTIFACT_DIR/summary-<job>-<leg>.json`` for the run report.
+    ``--job-failed`` (the workflow's ``failure() || cancelled()`` twin step)
+    marks a job that failed outside any recorded step. Always exits 0 except
+    for a usage error.
+    ``report`` - the ``report`` job (``run_report.py``): the run table from
+    the artifacts under ``$CI_TEMP_DIR/summaries``, legs and tier from
+    ``legs.json`` and the plan (``$CI_PLAN``; without one, the tier of
+    ``$CI_EVENT``/``$CI_REF``). Exits 1 if a leg failed or has no record.
+    ``plan`` (Story 04.0 Task 02, plan E7) - the ``plan`` job (``plan.py``):
+    classifies the changes (``classify_changes.py``), applies the tier table
+    and sets the job outputs ``build``/``sanitizers``/``gui``/``package``/
+    ``verify``/``publish``/``plan`` through ``Reporter.set_output()``. Exits
+    2 on any input outside its allowlist.
+
 Exit codes (SC1): 0 success, 1 a gate failed, 2 usage or environment error,
 128+n a sub-step killed by signal n. Run locally with the defaults of
 ``env_names`` (``CI_REPORTER=plain``, temporary directories); the leg then
@@ -142,6 +162,10 @@ LIVE_TABLE_ASAN_SKIP: Final = ("Q4: reading the table needs root on Linux; not r
                                "sanitizers (build linux runs it under sudo)")
 #: Jobs a leg can belong to (the workflow job that runs it).
 JOBS: Final = ("build", "sanitizers", "gui")
+#: Utility commands that are not SC1 stages (Story 04.0 Task 01).
+COMMANDS: Final = ("summary", "report", "plan")
+#: Jobs whose ``summary`` step may run (``lint`` plus every leg job).
+SUMMARY_JOBS: Final = ("lint",) + JOBS
 
 #: Inventory C12 sanitizer compile flags (the old ``ci.yml``'s), plus
 #: ``-fno-sanitize-recover=undefined`` (plan Q2/D2, E11): without it UBSan
@@ -908,7 +932,81 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--leg", default=None, help="leg from scripts/ci/legs.json (default $CI_LEG)")
     p.add_argument("--only", default=None, help="run one step of the stage")
     p.add_argument("--reporter", default=None, help="github|teamcity|plain (default $CI_REPORTER)")
+    p.add_argument("--job-failed", action="store_true",
+                   help="summary only: the job failed outside any recorded step")
     return p
+
+
+def run_summary(leg_value: Optional[str], reporter: Reporter, legs: Mapping[str, object],
+                job_failed: bool) -> int:
+    """``stage.py summary``: publish the job block and write the summary artifact (E9).
+
+    ``$CI_JOB`` (local default ``build``) must be one of :data:`SUMMARY_JOBS`
+    and the leg (``--leg``, else ``$CI_LEG``, local default the host leg) a
+    leg of ``legs.json``.
+
+    Raises:
+        UsageError: The job or leg is outside its allowlist (never echoed).
+    """
+    import job_summary
+    local = env_names.get("CI_PLATFORM") == "local"
+    job = env_names.get("CI_JOB") or ("build" if local else "")
+    if job not in SUMMARY_JOBS:
+        raise UsageError(f"CI_JOB must be one of: {', '.join(SUMMARY_JOBS)}")
+    leg = leg_value or env_names.get("CI_LEG") or (host_leg() if local else "")
+    entries = legs.get("legs")
+    if not _LEG_NAME.fullmatch(leg) or not isinstance(entries, dict) or leg not in entries:
+        raise UsageError("leg must be a leg of scripts/ci/legs.json")
+    rc, lines = job_summary.run(
+        reporter, job=job, leg=leg,
+        results=Path(env_names.get("CI_RESULTS_FILE", required=True)),
+        temp_dir=Path(env_names.get("CI_TEMP_DIR", required=True)),
+        artifact_dir=Path(env_names.get("CI_ARTIFACT_DIR", required=True)),
+        job_failed=job_failed)
+    ci_step.emit(lines)
+    return rc
+
+
+def run_report(reporter: Reporter, legs: Mapping[str, object]) -> int:
+    """``stage.py report``: the run table from ``$CI_TEMP_DIR/summaries`` (E9).
+
+    The legs and stages come from ``$CI_PLAN`` (the ``plan`` job's output,
+    re-validated by ``plan.parse_plan``); without a plan (a local run, or the
+    plan job failed) the Q1 tier of ``CI_EVENT``/``CI_REF`` decides, which
+    leaves every scheduled leg ``no record`` - never PASS.
+
+    Raises:
+        UsageError: ``CI_EVENT``/``CI_REF``/``CI_PLAN`` are outside their allowlists.
+    """
+    import plan as planning
+    import run_report as report
+    event, ref = env_names.get("CI_EVENT"), env_names.get("CI_REF")
+    validate_event(event, ref, env_names.get("CI_REF_NAME"))
+    text = env_names.get("CI_PLAN")
+    try:
+        parsed = planning.parse_plan(text, legs) if text else None
+    except planning.PlanError as exc:
+        raise UsageError(str(exc)) from None
+    temp_dir = Path(env_names.get("CI_TEMP_DIR", required=True))
+    rc, lines = report.run(reporter, summaries=temp_dir / report.SUMMARIES_DIR,
+                           legs_data=legs, tier=tier_legs(event, ref, legs), plan=parsed)
+    ci_step.emit(lines)
+    return rc
+
+
+def run_plan(reporter: Reporter) -> int:
+    """``stage.py plan``: the run plan as job outputs (Story 04.0 Task 02, plan E7).
+
+    Raises:
+        UsageError: Any ``CI_*`` input or data file is outside its allowlist.
+    """
+    import plan as planning
+    try:
+        lines = planning.run(reporter)
+    except planning.PlanError as exc:
+        raise UsageError(str(exc)) from None
+    ci_step.emit(lines)
+    return EXIT_OK
 
 
 def build_context(stage: str, leg_value: Optional[str], reporter: Reporter,
@@ -939,10 +1037,38 @@ def build_context(stage: str, leg_value: Optional[str], reporter: Reporter,
                    run_id=env_names.get("CI_RUN_ID") or "local")
 
 
+def _main_command(args: argparse.Namespace) -> int:
+    """Run a utility command (:data:`COMMANDS`); exit 2 on a usage error."""
+    try:
+        if args.only is not None:
+            raise UsageError(f"--only is not valid with {args.stage}")
+        if args.job_failed and args.stage != "summary":
+            raise UsageError("--job-failed is valid only with summary")
+        if args.leg is not None and args.stage != "summary":
+            raise UsageError(f"--leg is not valid with {args.stage}")
+        try:
+            reporter = get_reporter(args.reporter)
+        except ValueError:
+            raise UsageError("reporter must be one of: github, teamcity, plain") from None
+        if args.stage == "plan":
+            return run_plan(reporter)
+        legs = load_legs()
+        if args.stage == "summary":
+            return run_summary(args.leg, reporter, legs, args.job_failed)
+        return run_report(reporter, legs)
+    except UsageError as exc:
+        ci_step.emit_error(f"stage.py: error: {exc}")
+        return EXIT_USAGE
+
+
 def main(argv: Sequence[str]) -> int:
     """Validate the inputs, run the stage, return the SC1 exit code (never a traceback)."""
     args = _parser().parse_args(list(argv))
+    if args.stage in COMMANDS:
+        return _main_command(args)
     try:
+        if args.job_failed:
+            raise UsageError("--job-failed is valid only with summary")
         if args.stage not in STAGES:
             raise UsageError(f"stage must be one of: {', '.join(STAGES)}")
         if args.stage not in STEPS:

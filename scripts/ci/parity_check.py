@@ -223,7 +223,9 @@ def parse_stage_workflow(path: Path) -> List[StageJob]:
             run = step.get("run")
             if isinstance(run, str):
                 match = _RUN_LINE.match(run.strip())
-                if match:
+                # Utility commands (summary/report, Story 04.0 Task 01) report
+                # on the job; they carry no inventory row.
+                if match and match.group(1) not in stage.COMMANDS:
                     cond = step.get("if")
                     steps.append((str(cond).strip() if cond is not None else None,
                                   match.group(1), match.group(2)))

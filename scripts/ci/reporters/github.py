@@ -91,6 +91,11 @@ class GithubReporter:
         return [f"::warning title={_escape_property(clean_text(title))}::"
                 f"{escape_annotation(clean_text(text))}"]
 
+    def error(self, title: str, text: str) -> List[str]:
+        """Render one ``::error title=<title>::<text>`` annotation (escaped, CR-4)."""
+        return [f"::error title={_escape_property(clean_text(title))}::"
+                f"{escape_annotation(clean_text(text))}"]
+
     def set_output(self, name: str, value: object) -> None:
         """Append ``name<<DELIM`` / JSON / ``DELIM`` to ``CI_OUTPUT_FILE`` in one write.
 

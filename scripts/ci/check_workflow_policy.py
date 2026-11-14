@@ -10,7 +10,9 @@ text), plus the data files the rules read:
 - ``scripts/ci/actions_allowlist.json`` (P13), ``scripts/ci/publish_jobs.json``
   and ``scripts/ci/publish_destinations.json`` (P8, P12),
   ``scripts/ci/step_budgets.json`` (P4) and ``scripts/ci/pins.json`` (P3);
-- every file under ``.github/workflows/`` (P9);
+- every file under ``.github/workflows/`` (P9; a ``probe-*.yml`` is allowed
+  only on a ``probe/**`` branch, from ``CI_REF`` or, locally, the checked-out
+  git branch - see :func:`current_branch`);
 - every file under ``scripts/ci/`` except ``reporters/``, ``env_names.py`` and
   ``tests/`` (P11; it scans scripts, not workflows).
 
@@ -90,6 +92,15 @@ EXIT_INTERNAL = 70
 #: (``ci-next.yml`` left this list at the Story 03.0 Task 04 cutover.)
 ALLOWED_WORKFLOW_FILES: Tuple[str, ...] = ("ci.yml", "stage-*.yml")
 _STAGE_FILE = re.compile(r"^stage-[a-z0-9][a-z0-9-]*\.yml$")
+#: P9 (Story 04.0 Task 03): a probe workflow (``docs/dev/ci-probe-template.yml``
+#: copied to ``.github/workflows/probe-<topic>.yml``). Allowed, and then checked
+#: like every other workflow, only on a ``probe/**`` branch; anywhere else it is
+#: a ``stray probe workflow``.
+PROBE_WORKFLOW_FILES: Tuple[str, ...] = ("probe-*.yml",)
+PROBE_BRANCH_PREFIX = "probe/"
+#: The one trigger a probe workflow may have: ``on: push: branches: ['probe/**']``.
+PROBE_BRANCH_FILTER = PROBE_BRANCH_PREFIX + "**"
+_BRANCH_REF_PREFIX = "refs/heads/"
 _LOCAL_STAGE_USES = re.compile(r"^\./\.github/workflows/stage-[a-z0-9][a-z0-9-]*\.yml$")
 STAGE_PUBLISH_USES = "./.github/workflows/stage-publish.yml"
 
@@ -121,6 +132,14 @@ ENV_CONTEXTS_EXACT: Tuple[str, ...] = (
     "runner.temp")
 _ENV_CONTEXT_PATTERNS = (re.compile(r"^matrix\.[A-Za-z0-9_-]+$"),
                          re.compile(r"^needs\.plan\.outputs\.[A-Za-z0-9_-]+$"))
+#: P10 whole expressions allowed in env: although a context in them is not on
+#: :data:`ENV_CONTEXTS_EXACT` (milestone 0014 Story 04.0 Task 02). Each one
+#: evaluates to a boolean, so the untrusted string it reads never reaches the
+#: value: ``CI_PR_SAME_REPO`` (a fork PR's head repository name is chosen by
+#: the fork owner). Matched after whitespace is collapsed; the context alone,
+#: or inside any other expression, is still a violation.
+ENV_EXPRESSIONS_EXACT: Tuple[str, ...] = (
+    "github.event.pull_request.head.repo.full_name == github.repository",)
 
 #: P11 needles, built by concatenation (see :data:`EXPR_OPEN`).
 P11_NEEDLES: Tuple[str, ...] = (EXPR_OPEN, "%" + "teamcity.", "##" + "teamcity[",
@@ -1494,6 +1513,9 @@ class _WorkflowCheck:
         if _STAGE_FILE.match(self.name) and set(self.triggers) != {"workflow_call"}:
             self.v("workflow", "P9", "on: workflow_call only (stage workflow)",
                    ",".join(self.triggers) or "none")
+        if _is_probe_file(self.name) and not _probe_trigger_ok(self.triggers):
+            self.v("workflow", "P9", f"on: push: branches: [{PROBE_BRANCH_FILTER}] only (probe)",
+                   ",".join(self.triggers) or "none")
 
     # P10 ----------------------------------------------------------------
     def p10_env(self) -> None:
@@ -1522,6 +1544,8 @@ class _WorkflowCheck:
                 continue
             for key, value in env.items():
                 for expr in _expressions(str(value)):
+                    if " ".join(expr.split()) in ENV_EXPRESSIONS_EXACT:
+                        continue
                     for ref in _context_refs(expr):
                         if ref.split(".")[0].split("[")[0] == "secrets":
                             continue  # credentials are P8's
@@ -1633,21 +1657,97 @@ class _WorkflowCheck:
                    retention or "unset")
 
 
+def _is_probe_file(name: str) -> bool:
+    """Return whether ``name`` is a probe workflow file name (``probe-*.yml``)."""
+    return any(fnmatch.fnmatchcase(name, pat) for pat in PROBE_WORKFLOW_FILES)
+
+
+def _probe_trigger_ok(triggers: Dict[str, Any]) -> bool:
+    """Return whether the triggers are exactly ``push: branches: ['probe/**']``."""
+    push = triggers.get("push")
+    return (set(triggers) == {"push"} and isinstance(push, dict) and set(push) == {"branches"}
+            and [str(b) for b in _items(push.get("branches"))] == [PROBE_BRANCH_FILTER])
+
+
+def is_probe_branch(branch: Optional[str]) -> bool:
+    """Return whether ``branch`` (a short branch name, or ``None``) is a ``probe/<topic>`` branch."""
+    return bool(branch) and str(branch).startswith(PROBE_BRANCH_PREFIX) \
+        and len(str(branch)) > len(PROBE_BRANCH_PREFIX)
+
+
+def allowed_files_for(branch: Optional[str]) -> Tuple[str, ...]:
+    """Return the P9 file-name patterns for ``branch``: probe files only on ``probe/**``."""
+    if is_probe_branch(branch):
+        return ALLOWED_WORKFLOW_FILES + PROBE_WORKFLOW_FILES
+    return ALLOWED_WORKFLOW_FILES
+
+
+#: Signature of the local-branch lookup used by :func:`current_branch` (swappable in tests).
+GitBranch = Callable[[], Optional[str]]
+
+
+def _git_branch() -> Optional[str]:
+    """Return the checked-out branch of the repository, or ``None`` (detached, no git, error)."""
+    try:
+        proc = subprocess.run(["git", "-C", str(REPO_ROOT), "symbolic-ref", "--quiet", "--short",
+                               "HEAD"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              stdin=subprocess.DEVNULL, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    name = proc.stdout.decode("utf-8", errors="replace").strip()
+    return name or None
+
+
+def current_branch(git_branch: GitBranch = _git_branch) -> Optional[str]:
+    """Return the branch the gate runs for (P9 probe rule), or ``None`` when it is not a branch.
+
+    Neutral inputs only (ADR 0005): ``CI_REF`` decides when set. Only a
+    ``refs/heads/<name>`` ref is a branch; a pull-request merge ref, a tag
+    (even one named ``probe/...``, which is why ``CI_REF_NAME`` is not used)
+    or a malformed value gives ``None``. With ``CI_REF`` unset, a CI run
+    (``CI_PLATFORM`` other than ``local``) gives ``None``, and a local run asks
+    git for the checked-out branch (``None`` when detached or on any error).
+    ``None`` is never a probe branch, so the rule fails closed.
+    """
+    ref = env_names.get("CI_REF")
+    if ref:
+        if ref.startswith(_BRANCH_REF_PREFIX) and len(ref) > len(_BRANCH_REF_PREFIX):
+            return ref[len(_BRANCH_REF_PREFIX):]
+        return None
+    if env_names.get("CI_PLATFORM") != "local":
+        return None
+    return git_branch()
+
+
+def _name_violation(path: Path, allowed_files: Sequence[str]) -> Optional[Violation]:
+    """P9: the violation for a workflow file name outside ``allowed_files``, if any."""
+    if any(fnmatch.fnmatchcase(path.name, pat) for pat in allowed_files):
+        return None
+    file = display_path(path)
+    if _is_probe_file(path.name):
+        # Allowed on probe/** only: ci.yml ignores those pushes, so this fires
+        # on the first branch, pull request or master run the file reaches.
+        return Violation(file, "workflow", "P9", "stray probe workflow: 0", f"1 ({path.name})")
+    return Violation(file, "workflow", "P9", "file in " + ", ".join(allowed_files), path.name)
+
+
 def check_workflow(path: Path, allowed_files: Sequence[str] = ALLOWED_WORKFLOW_FILES,
                    policy: Optional[Policy] = None) -> List[Violation]:
     """Return every violation in the workflow file at ``path``.
 
     Args:
         path: The workflow file.
-        allowed_files: P9 file-name patterns (``fnmatch``).
+        allowed_files: P9 file-name patterns (``fnmatch``); see :func:`allowed_files_for`.
         policy: Loaded policy data; ``None`` loads the repository's own files.
     """
     policy = policy if policy is not None else load_policy()
     file = display_path(path)
     out: List[Violation] = []
-    if not any(fnmatch.fnmatchcase(path.name, pat) for pat in allowed_files):
-        out.append(Violation(file, "workflow", "P9", "file in " + ", ".join(allowed_files),
-                             path.name))
+    name_violation = _name_violation(path, allowed_files)
+    if name_violation is not None:
+        out.append(name_violation)
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
@@ -1668,10 +1768,14 @@ def check_workflow(path: Path, allowed_files: Sequence[str] = ALLOWED_WORKFLOW_F
 # --------------------------------------------------------------------------
 
 def check_workflows_dir(directory: Path, checked: Sequence[Path],
-                        allowed_files: Sequence[str] = ALLOWED_WORKFLOW_FILES) -> List[Violation]:
+                        allowed_files: Sequence[str] = ALLOWED_WORKFLOW_FILES,
+                        policy: Optional[Policy] = None) -> List[Violation]:
     """P9: every workflow file in ``directory`` not already checked has an allowed name.
 
-    A stage file there must also be ``on: workflow_call`` only.
+    A stage file there must also be ``on: workflow_call`` only. A probe file
+    (allowed only when ``allowed_files`` includes :data:`PROBE_WORKFLOW_FILES`,
+    i.e. on a ``probe/**`` branch) gets every workflow rule, like a file named
+    on the command line, so a probe run's own lint keeps it compliant.
     """
     out: List[Violation] = []
     if not directory.is_dir():
@@ -1681,9 +1785,12 @@ def check_workflows_dir(directory: Path, checked: Sequence[Path],
         if path.suffix not in (".yml", ".yaml") or path.resolve() in done:
             continue
         file = display_path(path)
-        if not any(fnmatch.fnmatchcase(path.name, pat) for pat in allowed_files):
-            out.append(Violation(file, "workflow", "P9", "file in " + ", ".join(allowed_files),
-                                 path.name))
+        name_violation = _name_violation(path, allowed_files)
+        if name_violation is not None:
+            out.append(name_violation)
+            continue
+        if _is_probe_file(path.name):
+            out += check_workflow(path, allowed_files, policy)
             continue
         if _STAGE_FILE.match(path.name):
             try:
@@ -1937,12 +2044,19 @@ def verify_tags(policy: Policy, gh_api: GhApi = _gh_api) -> List[Violation]:
 
 def run_gate(workflows: Sequence[Path], *, policy: Policy, workflows_dir: Path,
              scripts_dir: Optional[Path], tags: bool = False,
-             gh_api: GhApi = _gh_api) -> List[Violation]:
-    """Run every rule; return the violations in a stable order."""
+             gh_api: GhApi = _gh_api, branch: Optional[str] = None) -> List[Violation]:
+    """Run every rule; return the violations in a stable order.
+
+    Args:
+        branch: The branch the gate runs for (:func:`current_branch`); P9
+            allows ``probe-*.yml`` files only when it is ``probe/<topic>``.
+            ``None`` (not a branch, or unknown) never allows them.
+    """
+    allowed = allowed_files_for(branch)
     out: List[Violation] = list(policy.errors)
     for path in workflows:
-        out += check_workflow(path, ALLOWED_WORKFLOW_FILES, policy)
-    out += check_workflows_dir(workflows_dir, workflows)
+        out += check_workflow(path, allowed, policy)
+    out += check_workflows_dir(workflows_dir, workflows, allowed, policy)
     out += check_pins(policy)
     out += check_budgets(policy)
     out += check_allowlist(policy)
@@ -1992,7 +2106,8 @@ def main(argv: Sequence[str]) -> int:
                                      args.destinations_dir))
     scripts_dir = None if args.no_scripts else args.scripts_dir
     violations = run_gate(args.workflows, policy=policy, workflows_dir=args.workflows_dir,
-                          scripts_dir=scripts_dir, tags=args.verify_tags)
+                          scripts_dir=scripts_dir, tags=args.verify_tags,
+                          branch=current_branch())
     elapsed = round(time.monotonic() - start, 1)
     if not violations:
         summary = f"{len(args.workflows)} workflows, P1-P15"

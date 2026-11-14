@@ -45,6 +45,10 @@ class PlainReporter:
         """Render one ``warning: <title>: <text>`` line (sanitised)."""
         return [f"warning: {clean_text(title)}: {clean_text(text)}"]
 
+    def error(self, title: str, text: str) -> List[str]:
+        """Render one ``error: <title>: <text>`` line (sanitised)."""
+        return [f"error: {clean_text(title)}: {clean_text(text)}"]
+
     def set_output(self, name: str, value: object) -> None:
         """Print ``output: <name>=<single-line JSON>`` (validated like every backend)."""
         sys.stdout.write(f"output: {name}={output_json(name, value)}\n")
