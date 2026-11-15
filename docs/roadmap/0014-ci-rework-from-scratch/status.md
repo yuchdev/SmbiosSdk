@@ -8,8 +8,8 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
 |-------|---------------------------------------------------------------|----------------|-------|
 | 01.0  | Report contract, step runner and workflow-script test harness (+ reporter backends, neutral env names - ADR 0005) | ✅ Complete | 37 `scripts/ci` tests |
 | 02.0  | Pinned toolchain, hardened environment and least privilege (+ policy rules P10-P15, `bootstrap_vcpkg.py` - ADR 0005; Task 04 step-runner security follow-ups - threat model 2026-11-13) | ✅ Complete (on-runner checks pending) | 180 `scripts/ci` tests |
-| 03.0  | Rebuilt jobs with check parity (+ `stage.py`, reusable stage workflows, version check SC3, install-tree export SC2 - ADR 0005) | 🔶 In progress (Tasks 01-02 implemented locally) | 304 `scripts/ci` tests |
-| 04.0  | Summaries, triggers and the probe pattern (+ package/verify/publish tier rows - ADR 0005) | ⬜ Not started | -     |
+| 03.0  | Rebuilt jobs with check parity (+ `stage.py`, reusable stage workflows, version check SC3, install-tree export SC2 - ADR 0005) | ✅ Complete (2026-11-14; cutover to `ci.yml`, real-runner negative proofs 1-6, parity 21 of 21) | 420 `scripts/ci` tests |
+| 04.0  | Summaries, triggers and the probe pattern (+ package/verify/publish tier rows - ADR 0005) | ✅ Complete (2026-11-15; job summaries, `plan`/`report` jobs, tiering, probe pattern, `docs/dev/ci.md`) | 554 `scripts/ci` tests |
 
 **Legend:** ✅ Complete · 🔶 In progress / partial · ⬜ Not started
 
@@ -167,3 +167,21 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
 - Cancellation proof: pushes `f14fa6d` then `acdeb04` seconds apart: push 43700128493 and PR 43700133162 `cancelled`; push 43700143795 and PR 43700147032 `success` (report job green).
 - Probe proof: push to `probe/linux-cli-abort` (run 43696811006) ran only the single `build (linux)` stage job through the probe workflow and surfaced the CLI stderr; branch deleted afterwards.
 - `refs/remotes/origin/master` is present for classification: the plan job (`fetch-depth: 0`) classified every run above as `full` against the merge-base. Not re-run: negative proof 3 with the new gui row, and the docs-only tier on `master` (post-merge).
+
+## Milestone 0014 close (2026-11-15)
+
+PR #11 merged to `master` (merge commit `6161611`). The first `master` push run on the rebuilt pipeline (43707799474) passed all eleven jobs (`plan`, `lint`, three `build` legs, two `sanitizers` legs (Linux and macOS), three `gui` legs, and `report`) on the full tier.
+
+**Exit gate evidence:** parity C01-C22 21 of 21 kept (parity run, Story 03.0); negative proofs 1-6 on real runners (run IDs above); bounded logs through RC1-RC3 and the Q3 failure-only upload proof; PR/push/`master` runs green with the `CI: PASS` run table; concurrency cancellation observed (43700128493, 43700133162 cancelled); `covered by push run` suppression observed (43699210987); probe pattern run once (43696811006).
+
+**Product bug found by the new pipeline:** `assert(false)` on undefined firmware values in six getters aborted the CLI on a Linux runner; fixed in `1cdb30c` with regression tests. The earlier "intermittent runner abort" note is this bug.
+
+**Carried forward (not blockers):**
+- Maintainer repository settings: rulesets, `release`/`staging` environment protection, CODEOWNERS (checklist in `docs/dev/ci.md`).
+- Hosted-run proof of the docs-only (lint-only) tier remains outstanding; local coverage is in `test_classify_changes.py`, and the first docs-only `master` push is yet to be observed.
+- Negative proof 3 not re-run with the one-row `gui` summary.
+- Dead `workflow_dispatch && 'manual'` branch in the `CI_EVENT` expressions (cosmetic).
+- Single-job probe runs reach only the Linux legs.
+- Decision for the maintainer: whether the Linux live-table set becomes a hard gate, and whether `cli formats` degrades to `skip:` on an unreadable table.
+- Not reviewed: `/pr-review` was not run before the merge.
+- 0012 Story 04.0 (release/publish automation) is unblocked; 0013's CI tasks still name the old workflows.
