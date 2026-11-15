@@ -612,6 +612,29 @@ class StepTests(unittest.TestCase):
         (argv,) = self.argvs()
         self.assertEqual(argv[0], "--test-dir")
 
+    def test_ConsumerStepReportsOneOkLineWithCounts(self) -> None:
+        import consumer_smoke
+        leg = stage.Leg("linux", "linux", "linux", "")
+        with mock.patch.object(consumer_smoke, "run", return_value=["formatters=4", "fields=15"]):
+            rc, lines = self.capture(stage.step_consumer,
+                                     make_ctx(self.tmp, leg, stage_name="test"))
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("ok: consumer smoke: formatters=4, fields=15"))
+        (record,) = records(self.tmp)
+        self.assertEqual((record["label"], record["mode"]), ("consumer smoke", "hard"))
+
+    def test_ConsumerStepFailureIsAGateFailureNamingThePhase(self) -> None:
+        import consumer_smoke
+        leg = stage.Leg("linux", "linux", "linux", "")
+        err = consumer_smoke.SmokeError("run consumer failed (exit 1)\nformatters=0")
+        with mock.patch.object(consumer_smoke, "run", side_effect=err):
+            rc, lines = self.capture(stage.step_consumer,
+                                     make_ctx(self.tmp, leg, stage_name="test"))
+        self.assertEqual(rc, stage.EXIT_GATE)
+        self.assertTrue(lines[0].startswith("error: consumer smoke failed"))
+        self.assertIn("run consumer failed (exit 1)", lines[0])
+
     def test_StepsOffTheirLegSkip(self) -> None:
         leg = stage.Leg("linux", "linux", "linux", "")
         ctx = make_ctx(self.tmp, leg, stage_name="test")

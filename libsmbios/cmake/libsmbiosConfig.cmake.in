@@ -1,0 +1,18 @@
+@PACKAGE_INIT@
+
+if("@LIBSMBIOS_REQUIRES_LIBCXX@" STREQUAL "ON"
+    AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR
+        "This libsmbios package was built with libc++ and requires a Clang consumer.")
+endif()
+
+include(CMakeFindDependencyMacro)
+
+# The legacy library's exported link interface names Boost::iostreams
+# (libsmbios_posix_legacy / libsmbios_win_legacy), so a consumer must resolve
+# it before the targets file is read.
+find_dependency(Boost COMPONENTS iostreams)
+
+include("${CMAKE_CURRENT_LIST_DIR}/libsmbiosTargets.cmake")
+
+check_required_components(libsmbios)

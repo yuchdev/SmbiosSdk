@@ -15,5 +15,15 @@
 # header-only library, not an oversight.
 add_library(sys_interface INTERFACE)
 
+# Absolute source paths are illegal in an exported target, so the include
+# directory differs between the build tree and the installed package
+# (milestone 0012, Story 01.0: libsmbiosTargets export set).
 target_include_directories(sys_interface INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+
+# Header-only: no ARCHIVE/LIBRARY/RUNTIME destination, only the export entry
+# (milestone 0012, Story 01.0, Task 01).
+install(TARGETS sys_interface EXPORT libsmbiosTargets)
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/smbios
+    DESTINATION include)

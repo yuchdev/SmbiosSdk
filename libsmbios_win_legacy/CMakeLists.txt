@@ -26,8 +26,19 @@ file(GLOB SOURCES src/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/include/smbios/legacy/*.
 add_library(${TARGET} STATIC ${SOURCES})
 set_target_properties(${TARGET} PROPERTIES PREFIX "")
 
-target_include_directories(${TARGET} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(${TARGET} PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
 
-target_link_libraries(${TARGET} PUBLIC sys_interface ${Boost_LIBRARIES})
+target_link_libraries(${TARGET} PUBLIC sys_interface Boost::iostreams)
 
 target_compile_options(${TARGET} PRIVATE ${SMBIOS_COMPILE_OPTIONS} ${SMBIOS_WARNING_OPTIONS})
+
+# Milestone 0012, Story 01.0, Task 01: join the libsmbiosTargets export set
+# and install this library's public headers (include/smbios/<segment>/...).
+install(TARGETS ${TARGET} EXPORT libsmbiosTargets
+    ARCHIVE DESTINATION lib
+    LIBRARY DESTINATION lib
+    RUNTIME DESTINATION bin)
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/smbios
+    DESTINATION include)

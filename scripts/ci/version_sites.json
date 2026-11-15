@@ -13,6 +13,12 @@
       "file": "smbios_c/CMakeLists.txt",
       "extractor": "cmake_set:SMBIOS_C_VERSION",
       "rule": "derived"
+    },
+    {
+      "site": "LIBSMBIOS_VERSION",
+      "file": "libsmbios/CMakeLists.txt",
+      "extractor": "cmake_set:LIBSMBIOS_VERSION",
+      "rule": "derived"
     }
   ]
 }

@@ -10,7 +10,9 @@ file(GLOB SOURCES src/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/include/smbios/windows/*
 add_library(${TARGET} STATIC ${SOURCES})
 set_target_properties(${TARGET} PROPERTIES PREFIX "")
 
-target_include_directories(${TARGET} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(${TARGET} PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
 
 # PUBLIC libsmbios_win_legacy: windows_native_source.cpp's
 # make_default_source_chain() needs LegacyMemoryScanSource as the chain's
@@ -19,3 +21,12 @@ target_include_directories(${TARGET} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(${TARGET} PUBLIC sys_interface libsmbios_win_legacy)
 
 target_compile_options(${TARGET} PRIVATE ${SMBIOS_COMPILE_OPTIONS} ${SMBIOS_WARNING_OPTIONS})
+
+# Milestone 0012, Story 01.0, Task 01: join the libsmbiosTargets export set
+# and install this library's public headers (include/smbios/<segment>/...).
+install(TARGETS ${TARGET} EXPORT libsmbiosTargets
+    ARCHIVE DESTINATION lib
+    LIBRARY DESTINATION lib
+    RUNTIME DESTINATION bin)
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/smbios
+    DESTINATION include)

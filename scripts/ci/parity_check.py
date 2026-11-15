@@ -61,6 +61,7 @@ import apt_install  # noqa: E402
 import bootstrap_vcpkg  # noqa: E402
 import check_versions  # noqa: E402
 import check_workflow_policy as policy_gate  # noqa: E402
+import consumer_smoke  # noqa: E402
 import ci_step  # noqa: E402
 import cli_format_check  # noqa: E402
 import ctest_report  # noqa: E402,F401  (imported so its ci_step reference is the patched one)
@@ -366,6 +367,11 @@ def _patched(tracer: Tracer, temp: Path) -> Iterator[None]:
     def find_binary(build_dir, ctx):
         return (1 if tracer.record(Event("call", "gui binary")) else 0), None
 
+    def consumer_run(*_a, **_kw):
+        if tracer.record(Event("call", "consumer smoke")):
+            raise consumer_smoke.SmokeError("injected failure")
+        return ["formatters=4"]
+
     def print_env_main(argv) -> int:
         tracer.record(Event("info", "env header", "info"))
         return 0
@@ -391,6 +397,7 @@ def _patched(tracer: Tracer, temp: Path) -> Iterator[None]:
         (cli_format_check, "check_format", check_format),
         (cli_format_check, "noflag_equals_text", noflag),
         (cli_format_check, "sysfs_info", sysfs_info),
+        (consumer_smoke, "run", consumer_run),
         (gui_guards, "check_find_binary", find_binary),
         (gui_guards, "find_binaries", lambda *_a, **_k: []),
         (gui_guards, "check_hook_strings", call("gui hooks")),
