@@ -56,12 +56,13 @@ absolute-from-repo-root Markdown link:
 This roadmap takes `libbios` from a two-structure, Windows/pre-UEFI-Linux
 prototype to a portable, UEFI-capable C++20 library with a modern,
 dependency-managed build, a C ABI alongside its C++ one, tracked upstream
-references, and machine-parsable output. The fourteen milestones below are
+references, and machine-parsable output. The fifteen milestones below are
 intentionally sequential - each is the foundation the next one is built
 on. Milestones 0011-0013 extend that scope beyond the core C++ library
 itself - a GUI built on top of it, package-manager distribution of it, and
 bindings for other languages against its C ABI. Milestone 0014 turns to
-the project's own CI:
+the project's own CI, and 0015 to getting the CLI and GUI into the package
+managers end users actually install from:
 
 1. **0001** gives every later milestone a working, reproducible,
    vcpkg-based build before any source code changes land.
@@ -130,6 +131,19 @@ the project's own CI:
     check today's workflow performs, through an inventory parity gate, and
     changes no shipped code. It is best landed before the CI tasks of
     0012/0013, so their jobs are written once on the new contract.
+15. **0015** distributes the `smbios` CLI and `smbios_gui` to **end
+    users** - the other half of the problem
+    [ADR 0004](/docs/adr/0004-package-manager-distribution.md)'s
+    Alternative 4 deferred to "its own future ADR", now decided by
+    [ADR 0006](/docs/adr/0006-end-user-distribution-and-windows-installer.md).
+    It adds the repository's first `LICENSE` (MIT) and its first
+    `install()` rules for the two executables (without which no channel
+    can ship them at all), a **WiX MSI** with a four-feature tree (CLI,
+    GUI, shared `smbios_c`, static `libsmbios`), and ADR 0006 Wave 1's
+    four channels - Chocolatey, WinGet, a Homebrew tap and AUR - as
+    ADR 0005 D9 destination plug-ins, so it adds no workflow file.
+    0012 keeps the *developer* axis (vcpkg, `pkg-config`); this milestone
+    owns the *end-user* axis.
 
 ## Milestones
 
@@ -149,5 +163,6 @@ the project's own CI:
 | 0012 | Package manager distribution (`libsmbios` install rules, self-hosted vcpkg port for `smbios_c`, GitHub Releases) | [plan.md](./0012-package-manager-distribution/plan.md) | [status.md](./0012-package-manager-distribution/status.md) |
 | 0013 | Language bindings (Rust `smbios-sys`/`smbios`, Python `smbios`) over `smbios_c` | [plan.md](./0013-language-bindings/plan.md)          | [status.md](./0013-language-bindings/status.md)                          |
 | 0014 | CI rework from scratch (report contract, step runner, pinned runners, bounded summaries) | [plan.md](./0014-ci-rework-from-scratch/plan.md) | [status.md](./0014-ci-rework-from-scratch/status.md) |
+| 0015 | End-user distribution and the Windows installer (MIT licence, CLI/GUI install rules, WiX MSI, Chocolatey/WinGet/Homebrew/AUR) | [plan.md](./0015-end-user-distribution-and-windows-installer/plan.md) | [status.md](./0015-end-user-distribution-and-windows-installer/status.md) |
 
 **Legend (status.md files):** ✅ Complete · 🔶 In progress / partial · ⬜ Not started

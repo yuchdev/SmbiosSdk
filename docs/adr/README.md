@@ -13,6 +13,7 @@ are in `assets/`.
 | [0003](0003-gui-toolkit-for-smbios-visualization.md) | GUI toolkit for SMBIOS visualization | Proposed | 2026-11-10 |
 | [0004](0004-package-manager-distribution.md) | Package manager distribution for `libsmbios` and `smbios_c` | Proposed | 2026-11-10 |
 | [0005](0005-unified-build-package-publish-pipeline.md) | Unified build, package and publish pipeline | Proposed | 2026-11-12 |
+| [0006](0006-end-user-distribution-and-windows-installer.md) | End-user distribution channels and the Windows installer | Proposed | 2026-11-15 |
 
 ## Template
 
