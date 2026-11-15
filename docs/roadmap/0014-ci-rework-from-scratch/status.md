@@ -164,3 +164,6 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
 - PR run of `3cf4993` (43699210987): `CI: PASS - 5 legs passed, 0 failed, 1 with warnings, 0 not run (tier), 3 not run (covered by push run)`; plan line `3 covered by push run`.
 - A docs-only push to this branch still ran the three Linux legs (push run 43699207200): non-master pushes are classified against `master`, and the branch carries code changes, so docs-only classification can only be shown on `master` after merge. Local coverage: `test_classify_changes.py`.
 - (cancellation proof, second push)
+- Cancellation proof: pushes `f14fa6d` then `acdeb04` seconds apart: push 43700128493 and PR 43700133162 `cancelled`; push 43700143795 and PR 43700147032 `success` (report job green).
+- Probe proof: push to `probe/linux-cli-abort` (run 43696811006) ran only the single `build (linux)` stage job through the probe workflow and surfaced the CLI stderr; branch deleted afterwards.
+- `refs/remotes/origin/master` is present for classification: the plan job (`fetch-depth: 0`) classified every run above as `full` against the merge-base. Not re-run: negative proof 3 with the new gui row, and the docs-only tier on `master` (post-merge).
