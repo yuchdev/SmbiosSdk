@@ -1,7 +1,7 @@
 # Story 04.0 - Summaries, Triggers and the Probe Pattern
 
 **Parent milestone:** [plan.md](../plan.md)
-**Status:** ⬜ Not started
+**Status:** 🔶 In progress
 **Depends on:** Story 03.0 (cutover done), Story 01.0 (RC3 records)
 
 ## Scope
@@ -17,9 +17,9 @@ This story delivers the reader-facing half of the maintainer's request, "maximum
 
 | #  | Document | Status | Blocks |
 |----|----------|--------|--------|
-| 01 | [Job summaries and annotations](01-job-summaries-and-annotations.md) | ⬜ Not started | 04 |
-| 02 | [Triggers, concurrency and matrix tiering](02-triggers-concurrency-and-tiering.md) | ⬜ Not started | 04 |
-| 03 | [Probe-workflow pattern and single-job runs](03-probe-workflow-pattern-and-single-job-runs.md) | ⬜ Not started | 04 |
+| 01 | [Job summaries and annotations](01-job-summaries-and-annotations.md) | ✅ Complete locally (real-run proofs after push) | 04 |
+| 02 | [Triggers, concurrency and matrix tiering](02-triggers-concurrency-and-tiering.md) | ✅ Complete locally (real-run proofs after push) | 04 |
+| 03 | [Probe-workflow pattern and single-job runs](03-probe-workflow-pattern-and-single-job-runs.md) | ✅ Complete locally (real probe proof pending) | 04 |
 | 04 | [Docs and milestone exit gate](04-docs-and-milestone-exit-gate.md) | ⬜ Not started | - |
 
 ## Key constraints

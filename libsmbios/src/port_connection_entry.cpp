@@ -4,7 +4,6 @@
 #include <libsmbios/smbios_entry_factory.hpp>
 
 #include <sstream>
-#include <cassert>
 
 using std::string;
 using namespace smbios;
@@ -141,7 +140,7 @@ uint8_t PortConnectionEntry::get_internal_connection_type() const
     if (it != connection_type_map_.end()) {
         return (*it).first;
     }
-    assert(false);
+    // Unknown firmware value: fall back instead of aborting.
     return ConnectorType::NoneConnector;
 }
 
@@ -157,7 +156,7 @@ uint8_t PortConnectionEntry::get_external_connection_type() const
     if (it != connection_type_map_.end()) {
         return (*it).first;
     }
-    assert(false);
+    // Unknown firmware value: fall back instead of aborting.
     return ConnectorType::NoneConnector;
 }
 
@@ -173,7 +172,7 @@ uint8_t PortConnectionEntry::get_port_type() const
     if (it != port_type_map_.end()) {
         return (*it).first;
     }
-    assert(false);
+    // Unknown firmware value: fall back instead of aborting.
     return PortType::NonePort;
 }
 
