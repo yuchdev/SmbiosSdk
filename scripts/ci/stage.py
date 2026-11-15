@@ -913,8 +913,8 @@ STEP_FUNCTIONS: Final[Dict[str, Dict[str, StepFn]]] = {
     "build": {"packages": step_packages, "prepare": step_prepare, "compile": step_compile,
               "install": step_install},
     "test": {"unit": step_unit, "cli-formats": step_cli_formats, "live-table": step_live_table,
-             "consumer": step_consumer, "gui-binary": step_gui_binary, "gui-hooks": step_gui_hooks, "gui-ci": step_gui_ci,
-             "gui-local": step_gui_local},
+             "consumer": step_consumer, "gui-binary": step_gui_binary,
+             "gui-hooks": step_gui_hooks, "gui-ci": step_gui_ci, "gui-local": step_gui_local},
 }
 #: Stages that stop at the first failing step (later steps depend on earlier ones).
 STOP_ON_FAILURE: Final = ("build",)

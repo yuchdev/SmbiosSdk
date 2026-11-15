@@ -15,13 +15,23 @@ only.
 """
 from __future__ import annotations
 
+import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 from typing import List, Optional, Sequence
 
+import ci_step
+from reporters import child_environment
+
 FIXTURE = Path(__file__).resolve().parents[2] / "tests" / "packaging" / "libsmbios_consumer"
 TAIL_LINES = 12
+#: Seconds each phase may take (a cold Windows configure is the slowest).
+PHASE_TIMEOUT_S = {"install": 120, "configure consumer": 300, "build consumer": 300,
+                   "run consumer": 60}
+#: A build configuration name (``Debug``, ``Release``, ...); never an option-looking value.
+_CONFIG = re.compile(r"[A-Za-z][A-Za-z0-9]{0,31}")
 
 
 class SmokeError(Exception):
@@ -41,10 +51,18 @@ def vcpkg_prefixes(build_dir: Path) -> List[Path]:
 
 
 def _run(phase: str, argv: Sequence[str], cwd: Optional[Path] = None) -> str:
-    proc = subprocess.run(list(argv), cwd=cwd, stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT, text=True, check=False)
+    """Run one phase: stripped environment (CR-5), no stdin, bounded time, cleaned tail."""
+    try:
+        proc = subprocess.run(list(argv), cwd=cwd, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True,
+                              errors="replace", env=child_environment(os.environ), check=False,
+                              timeout=PHASE_TIMEOUT_S.get(phase, 300))
+    except subprocess.TimeoutExpired:
+        raise SmokeError(f"{phase} timed out after {PHASE_TIMEOUT_S.get(phase, 300)}s") from None
     if proc.returncode != 0:
-        tail = "\n".join(proc.stdout.splitlines()[-TAIL_LINES:])
+        # Same cleaning as every other logged line (CR-4): controls and bidi stripped, cut.
+        tail = "\n".join(ci_step.safe_line(line.encode("utf-8", "replace"))
+                         for line in proc.stdout.splitlines()[-TAIL_LINES:])
         raise SmokeError(f"{phase} failed (exit {proc.returncode})\n{tail}")
     return proc.stdout
 
@@ -62,6 +80,8 @@ def find_executable(build: Path, config: str) -> Path:
 def run(build_dir: Path, work_dir: Path, config: str, extra_prefixes: Sequence[Path] = (),
         fixture: Path = FIXTURE) -> List[str]:
     """Install, configure, build, run; return the program's stdout lines."""
+    if config and not _CONFIG.fullmatch(config):
+        raise SmokeError("invalid build configuration name")
     if not fixture.is_dir():
         raise SmokeError("consumer fixture missing")
     prefix = work_dir / "prefix"
