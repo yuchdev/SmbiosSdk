@@ -26,11 +26,13 @@ find_library(COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
 # find_library() resolves to an absolute path under this machine's SDK, which
 # an installed package must not bake in (milestone 0012, Story 01.0): the
 # exported form names the frameworks, resolved by the consumer's own SDK.
+# (-Wl,-framework,X is one token: CMake splits a spaced "-framework X" item
+# and turns the second half into -lX.)
 target_link_libraries(${TARGET} PUBLIC
     $<BUILD_INTERFACE:${IOKIT_FRAMEWORK}>
     $<BUILD_INTERFACE:${COREFOUNDATION_FRAMEWORK}>
-    $<INSTALL_INTERFACE:-framework IOKit>
-    $<INSTALL_INTERFACE:-framework CoreFoundation>)
+    $<INSTALL_INTERFACE:-Wl,-framework,IOKit>
+    $<INSTALL_INTERFACE:-Wl,-framework,CoreFoundation>)
 
 target_compile_options(${TARGET} PRIVATE ${SMBIOS_COMPILE_OPTIONS} ${SMBIOS_WARNING_OPTIONS})
 

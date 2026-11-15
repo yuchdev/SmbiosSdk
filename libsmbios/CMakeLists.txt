@@ -54,3 +54,53 @@ install(TARGETS ${TARGET} EXPORT libsmbiosTargets
 # One recursive copy covers libsmbios/{,tables/,formatters/}*.hpp.
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/libsmbios
     DESTINATION include)
+
+# ---------------------------------------------------------------------------
+# Milestone 0012, Story 01.0, Task 02: exported package (contract C1).
+#
+# REGISTER_SMBIOS_ENTRY / REGISTER_OUTPUT_FORMATTER run from static
+# initializers that only execute for object files actually linked in, so a
+# consumer that links libsmbios.a normally silently gets a nullptr from
+# SMBiosEntryFactory::create() for every type. The whole-archive flag is
+# therefore part of the exported target's INTERFACE, keyed the same
+# three-way way smbios/src/CMakeLists.txt keys its own PRIVATE one.
+#
+# INSTALL_INTERFACE only: this repo's own consumers (smbios, smbios_c, the
+# tests) already apply whole-archive themselves, and CMake does NOT rewrite a
+# bare $<TARGET_FILE:libsmbios> to the imported name on export (it would name a
+# target that does not exist in a consumer's build), so the installed form
+# spells libsmbios::libsmbios explicitly.
+# ---------------------------------------------------------------------------
+if(APPLE)
+    target_link_options(${TARGET} INTERFACE
+        "$<INSTALL_INTERFACE:LINKER:-force_load,$<TARGET_FILE:libsmbios::libsmbios>>")
+elseif(MSVC)
+    target_link_options(${TARGET} INTERFACE
+        "$<INSTALL_INTERFACE:/WHOLEARCHIVE:$<TARGET_FILE:libsmbios::libsmbios>>")
+else()
+    target_link_options(${TARGET} INTERFACE
+        "$<INSTALL_INTERFACE:LINKER:--whole-archive,$<TARGET_FILE:libsmbios::libsmbios>,--no-whole-archive>")
+endif()
+
+# Independent of SMBIOS_C_VERSION (no shared version policy yet); both are
+# checked by scripts/ci/check_versions.py via scripts/ci/version_sites.json.
+set(LIBSMBIOS_VERSION "1.0.0")
+
+include(CMakePackageConfigHelpers)
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/libsmbiosConfigVersion.cmake
+    VERSION ${LIBSMBIOS_VERSION}
+    COMPATIBILITY SameMajorVersion)
+configure_package_config_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/libsmbiosConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/libsmbiosConfig.cmake
+    INSTALL_DESTINATION lib/cmake/libsmbios)
+
+install(EXPORT libsmbiosTargets
+    FILE libsmbiosTargets.cmake
+    NAMESPACE libsmbios::
+    DESTINATION lib/cmake/libsmbios)
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/libsmbiosConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/libsmbiosConfigVersion.cmake
+    DESTINATION lib/cmake/libsmbios)

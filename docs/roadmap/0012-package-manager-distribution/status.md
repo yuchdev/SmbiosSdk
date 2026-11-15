@@ -6,7 +6,7 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
 
 | Story | Name                                                        | Status         | Tests |
 |-------|------------------------------------------------------------------|----------------|-------|
-| 01.0  | `libsmbios` install rules and whole-archive-safe package export | 🔶 In progress (1/3 tasks) | - |
+| 01.0  | `libsmbios` install rules and whole-archive-safe package export | 🔶 In progress (2/3 tasks) | - |
 | 02.0  | Self-hosted vcpkg overlay/registry port for `smbios_c`           | ⬜ Not started | - |
 | 03.0  | GitHub Releases prebuilt artifacts - pipeline `package` stage (ADR 0005); blocked on 0014 | ⬜ Not started | - |
 | 04.0  | Release and publish automation - pipeline `verify`/`publish` stages (ADR 0005); blocked on 0014 | ⬜ Not started | - |
@@ -30,3 +30,5 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
 
   **Still open for the maintainer:** licence (H3), `.pc` relocatability (H1), CLI in the tarball (I2), registry hosting (H2), Windows static triplet (M4).
 - 2026-11-15 The end-user distribution axis this milestone's Non-goals defer (Homebrew, apt, distro packaging of the `smbios` CLI - ADR 0004's Alternative 4) is now decided by [ADR 0006](/docs/adr/0006-end-user-distribution-and-windows-installer.md) (Proposed), which adds a Windows WiX MSI and a wave-ordered channel matrix. It changes nothing in this milestone's scope, but it **depends** on Story 01.0 (install rules + whole-archive-safe package export) and Story 04.0 Task 01 (the D5 version source), and it escalates open question **H3 (licence) from deferred to blocking** - no public registry row in its matrix can ship without a `LICENSE` file. It also records a prerequisite neither milestone covers: `smbios` (CLI) and `smbios_gui` have no `install()` rules at all, so the `package` stage cannot archive them.
+
+- **2026-11-15 Story 01.0 Task 02 (as built, macOS-verified).** `libsmbiosConfigVersion.cmake` uses `COMPATIBILITY SameMajorVersion` on `LIBSMBIOS_VERSION` (1.0.0, separate from `SMBIOS_C_VERSION`; both are rows in `scripts/ci/version_sites.json`): the C++ surface may grow within a major version, and no ABI/semver policy exists yet (plan Key constraints), so a major bump is the only boundary a consumer should be protected from. Revisit when a versioning policy is adopted. Measured: CMake does **not** rewrite a bare `$<TARGET_FILE:libsmbios>` on export, so the whole-archive link option is `$<INSTALL_INTERFACE:...$<TARGET_FILE:libsmbios::libsmbios>>` (installed form only; in-repo consumers keep their own whole-archive). macOS frameworks export as `-Wl,-framework,X` (a spaced `-framework X` is split into `-framework -lX`). The package config calls `find_dependency(Boost COMPONENTS iostreams)`. Windows (`/WHOLEARCHIVE:` on an imported target path) and Linux (`--whole-archive`) forms are unverified until Task 03's CI consumer gate.

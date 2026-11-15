@@ -1,7 +1,7 @@
 # 02 - Exported package config and whole-archive link
 
 **Parent story:** [README.md](README.md)
-**Status:** ⬜ Not started
+**Status:** ✅ Complete (macOS; Windows/Linux via Task 03 CI gate)
 **Depends on:** Task 01
 
 ## Objective
@@ -20,6 +20,7 @@ already carrying the platform-correct whole-archive flag - implementing
   include("${CMAKE_CURRENT_LIST_DIR}/libsmbiosTargets.cmake")
   check_required_components(libsmbios)
   ```
+- **As built:** all of this lives in `libsmbios/CMakeLists.txt`; the whole-archive option is `INSTALL_INTERFACE`-only and names `$<TARGET_FILE:libsmbios::libsmbios>` (see status.md Notes & decisions, 2026-11-15).
 - **Modify** `libsmbios/src/CMakeLists.txt` (or a new
   `libsmbios/cmake/CMakeLists.txt`, implementation's choice), adding the
   generator-expression-keyed whole-archive flag to the exported target
