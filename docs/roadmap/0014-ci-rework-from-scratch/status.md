@@ -163,3 +163,4 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
 - Still to record: docs-only push, quick double push (cancellation).
 - PR run of `3cf4993` (43699210987): `CI: PASS - 5 legs passed, 0 failed, 1 with warnings, 0 not run (tier), 3 not run (covered by push run)`; plan line `3 covered by push run`.
 - A docs-only push to this branch still ran the three Linux legs (push run 43699207200): non-master pushes are classified against `master`, and the branch carries code changes, so docs-only classification can only be shown on `master` after merge. Local coverage: `test_classify_changes.py`.
+- (cancellation proof, second push)
