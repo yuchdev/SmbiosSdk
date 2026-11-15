@@ -1,7 +1,7 @@
 # 03 - Tests
 
 **Parent story:** [README.md](README.md)
-**Status:** ⬜ Not started
+**Status:** ✅ Complete (macOS; Windows/Linux first run on CI)
 
 ## Objective
 
@@ -38,6 +38,7 @@ repo's source tree from the consumer side.
   with **zero** whole-archive/force_load/WHOLEARCHIVE lines of its own -
   only `find_package(libsmbios CONFIG REQUIRED)` +
   `target_link_libraries(consumer PRIVATE libsmbios::libsmbios)`.
+- **As built:** the CI wiring is the `consumer` step of `stage.py test` (job `build`), implemented by `scripts/ci/consumer_smoke.py`; no workflow file changed (ADR 0005). Superseded text follows.
 - **Modify** `.github/workflows/ci.yml` (or a new workflow file,
   implementation's choice): a step that runs `cmake --install` into a
   scratch prefix, then configures/builds/runs the fixture above against

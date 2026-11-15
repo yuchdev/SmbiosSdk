@@ -43,7 +43,10 @@ this order):
     ``unit_tests``), ``cli-formats`` (C07, C08, C09; ``cli_format_check.py``;
     not on sanitizer legs), ``live-table`` (best-effort, counts-only; C10 on
     Windows, plan Q4 under ``sudo -n`` on Linux, C14 on ``macos-asan``; legs
-    with ``live_table_tests``, else one ``skip:`` line). ``unit`` and
+    with ``live_table_tests``, else one ``skip:`` line), ``consumer`` (hard;
+    0012 Story 01.0: ``consumer_smoke.py`` installs the built tree and builds a
+    clean-room consumer of the installed ``libsmbios`` package; the build job's
+    legs only). ``unit`` and
     ``live-table`` run the ``test_sets.json`` sets through ``ctest_report.py``
     (Story 03.0 Task 02): the exit code decides, the counts come from
     ``ctest --output-junit``.
@@ -138,15 +141,15 @@ STAGES: Final = ("lint", "build", "test", "package", "verify", "publish")
 STEPS: Final[Dict[str, Tuple[str, ...]]] = {
     "lint": ("env", "self-test", "lint", "versions", "cversions", "doc-samples"),
     "build": ("packages", "prepare", "compile", "install"),
-    "test": ("unit", "cli-formats", "live-table", "gui-binary", "gui-hooks", "gui-ci",
-             "gui-local"),
+    "test": ("unit", "cli-formats", "live-table", "consumer", "gui-binary", "gui-hooks",
+             "gui-ci", "gui-local"),
 }
 #: Run order of each (stage, job); a stage absent here runs all of ``STEPS``.
 JOB_STEPS: Final[Dict[Tuple[str, str], Tuple[str, ...]]] = {
     ("build", "build"): ("prepare", "compile", "install"),
     ("build", "sanitizers"): ("prepare", "compile", "install"),
     ("build", "gui"): ("packages", "prepare", "compile"),
-    ("test", "build"): ("unit", "cli-formats", "live-table"),
+    ("test", "build"): ("unit", "cli-formats", "live-table", "consumer"),
     ("test", "sanitizers"): ("unit", "cli-formats", "live-table"),
     ("test", "gui"): ("gui-binary", "gui-hooks", "gui-ci", "gui-local"),
 }
@@ -846,6 +849,29 @@ def step_live_table(ctx: Context) -> int:
     return _run_set(ctx, "live_table", "live-table", LIVE_TABLE_REASON, sudo=sudo)
 
 
+def step_consumer(ctx: Context) -> int:
+    """Hard: a clean-room consumer of the installed ``libsmbios`` package (0012 Story 01.0).
+
+    ``consumer_smoke.py`` installs the built tree into a scratch prefix and builds
+    ``tests/packaging/libsmbios_consumer`` against that prefix only, proving the
+    exported target carries the whole-archive link (ADR 0004 DD1).
+    """
+    import consumer_smoke
+    start = time.monotonic()
+    try:
+        lines = consumer_smoke.run(ctx.build_dir, ctx.temp_dir / "consumer-smoke",
+                                   ctx.leg.config or "")
+    except consumer_smoke.SmokeError as exc:
+        first, *tail = str(exc).splitlines() or ["failed"]
+        return ctx.fail("consumer smoke", first, start, tail)
+    elapsed = round(time.monotonic() - start, 1)
+    summary = ", ".join(lines)
+    ctx.emit(ctx.reporter.step_ok("consumer smoke", summary, elapsed))
+    ci_step.append_record(ci_step.StepResult("consumer smoke", "hard", "ok", 0, elapsed, summary,
+                                             None, None), ctx.results)
+    return 0
+
+
 def _gui_ctx(ctx: Context):
     import gui_guards
     return gui_guards.Ctx(ctx.reporter, ctx.results)
@@ -887,7 +913,7 @@ STEP_FUNCTIONS: Final[Dict[str, Dict[str, StepFn]]] = {
     "build": {"packages": step_packages, "prepare": step_prepare, "compile": step_compile,
               "install": step_install},
     "test": {"unit": step_unit, "cli-formats": step_cli_formats, "live-table": step_live_table,
-             "gui-binary": step_gui_binary, "gui-hooks": step_gui_hooks, "gui-ci": step_gui_ci,
+             "consumer": step_consumer, "gui-binary": step_gui_binary, "gui-hooks": step_gui_hooks, "gui-ci": step_gui_ci,
              "gui-local": step_gui_local},
 }
 #: Stages that stop at the first failing step (later steps depend on earlier ones).

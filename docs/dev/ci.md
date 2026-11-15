@@ -77,7 +77,7 @@ Every project-owned workflow step is one such line (plan SC1, policy P7); `.gith
 |-------|------------------|----------------|
 | `lint` | `env`, `self-test`, `lint`, `versions`, `cversions`, `doc-samples` | C01, C02, C21, C22 + SC3 |
 | `build` | `prepare` (pinned tools, RC4 header, self-test, vcpkg cache key), `compile` (vcpkg bootstrap, configure, cache health, build), `install` (packaging legs only) | C03, C04, C11 |
-| `test` | `unit` (C06, C13), `cli-formats` (C07, C08, C09), `live-table` (C10, C14, Q4; best-effort, counts-only) | C06-C10, C13, C14 |
+| `test` | `unit` (C06, C13), `cli-formats` (C07, C08, C09), `live-table` (C10, C14, Q4; best-effort, counts-only), `consumer` (`build` job legs only: `scripts/ci/consumer_smoke.py` installs the built tree and builds `tests/packaging/libsmbios_consumer` against the installed `libsmbios` package, with no whole-archive flag of its own; milestone 0012 Story 01.0) | C06-C10, C13, C14 |
 
 Legs, their preset, build configuration, runner and job, and the trigger tiers live in `scripts/ci/legs.json`. The sanitizer legs `linux-asan`/`macos-asan` (job `sanitizers`, inventory C12-C14) configure into `build/<preset>-asan` with ASan + fatal UBSan (`-fno-sanitize-recover=undefined`, `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`) and keep the old `ASAN_OPTIONS`.
 
