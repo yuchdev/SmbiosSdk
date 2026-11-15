@@ -30,14 +30,7 @@ target_include_directories(${TARGET} PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
 
-# ${Boost_LIBRARIES} are absolute paths into this machine's Boost, which an
-# installed package must not bake in: the exported form names the imported
-# target and libsmbiosConfig.cmake runs find_dependency(Boost) (Story 01.0).
-# Quoted: FindBoost module mode on a multi-config generator yields a list
-# (optimized;a;debug;b), which an unquoted genex argument would split.
-target_link_libraries(${TARGET} PUBLIC sys_interface
-    "$<BUILD_INTERFACE:${Boost_LIBRARIES}>"
-    $<INSTALL_INTERFACE:Boost::iostreams>)
+target_link_libraries(${TARGET} PUBLIC sys_interface Boost::iostreams)
 
 target_compile_options(${TARGET} PRIVATE ${SMBIOS_COMPILE_OPTIONS} ${SMBIOS_WARNING_OPTIONS})
 

@@ -46,6 +46,14 @@ target_link_libraries(${TARGET} PUBLIC sys_interface ${SMBIOS_LEGACY_LIB} ${SMBI
 target_include_directories(${TARGET} PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
+target_compile_features(${TARGET} PUBLIC cxx_std_20)
+
+set(LIBSMBIOS_REQUIRES_LIBCXX OFF)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(LIBSMBIOS_REQUIRES_LIBCXX ON)
+    target_compile_options(${TARGET} INTERFACE -stdlib=libc++)
+    target_link_options(${TARGET} INTERFACE -stdlib=libc++)
+endif()
 
 install(TARGETS ${TARGET} EXPORT libsmbiosTargets
     ARCHIVE DESTINATION lib
