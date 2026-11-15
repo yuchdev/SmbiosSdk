@@ -155,3 +155,9 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
   - **Task 04** (docs): `docs/dev/ci.md` (251 lines), `CLAUDE.md`, `docs/test/test-subsystem.md`, `docs/dev/cpp_coding_standard.md` ("CI gates"); `check_doc_links.py docs/ CLAUDE.md`: 0 problems.
   - **Gate:** 554 `scripts/ci` tests, actionlint + policy ok, `inventory parity: 21 of 21 kept, 1 dropped (C05: dead)`. `task-verifier`: Tasks 01-03 PASS.
   - **Exit-gate items still needing runner evidence:** 7 (probe + single-job timings), 8 (concurrency cancel, duplicate-run suppression observed once each), 9/10 (green and failing run tables), plus the plan job's `if:`/`fromJSON` skip behaviour and `refs/remotes/origin/master` after checkout.
+
+### Story 04.0 runner evidence, first pass (2026-11-15)
+
+- Push of `10721ea`: Linux `build` failed (CLI aborted, status -6) while the PR run passed. A throwaway probe branch printed the CLI's stderr: `MemoryDeviceEntry::get_device_type(): Assertion 'false' failed`. Cause: `assert(false)` on an undefined firmware value (six getters). Fixed in `1cdb30c` (fallback to the out-of-spec value, regression tests); the intermittent abort recorded earlier is this bug, not a runner flake.
+- Push and PR runs of `1cdb30c` (43698312177, 43698318377): all jobs and the `report` job green. The push run shows `macos`/`windows` legs `not run: tier`.
+- Still to record: docs-only push, quick double push (cancellation).
