@@ -24,7 +24,7 @@ consumer, and Story 03.0's GitHub Releases tarball).
 |----|----------------------------------------------------------------------|----------------|--------|
 | 01 | [Install rules for libsmbios and its dependencies](01-install-rules-for-libsmbios-and-dependencies.md) | ✅ Complete | 02     |
 | 02 | [Exported package config and whole-archive link](02-exported-package-config-and-whole-archive-link.md) | ✅ Complete | 03     |
-| 03 | [Tests](03-tests.md)                                                  | ⬜ Not started | -      |
+| 03 | [Tests](03-tests.md)                                                  | ✅ Complete | -      |
 
 ## Key constraints
 
