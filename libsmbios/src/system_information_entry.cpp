@@ -104,8 +104,8 @@ uint8_t SystemInformationEntry::get_wake_up_type() const
         return (*it).first;
     }
 
-    // should not be undefined values
-    assert(false);
+    // Firmware-supplied value outside the known set: report the out-of-spec
+    // fallback rather than aborting (never trust table bytes).
     return WakeUpType::Reserved;
 }
 

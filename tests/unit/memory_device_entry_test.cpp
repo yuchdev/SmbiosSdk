@@ -1,4 +1,6 @@
 #include <cstdint>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include <libsmbios/smbios.hpp>
@@ -429,6 +431,72 @@ BOOST_AUTO_TEST_CASE(MemoryDeviceEntryGetFieldsHonoursLengthTiersTestCase)
         {"Asset Tag", str("Not Specified")},
         {"Part Number", str("Not Specified")},
     });
+}
+
+// Undefined firmware enum values (regression, CI Linux abort)
+//
+// Type: unit - deterministic, synthetic table, no hardware/privileges.
+// Scenario: firmware reports a form factor / device type byte that is not in
+// form_factor_map_ / device_type_map_ (e.g. DDR5 = 0x22, newer than this
+// parser's map). get_form_factor()/get_device_type() used to hit
+// assert(false) and abort the process (seen on a CI Linux runner:
+// "MemoryDeviceEntry::get_device_type ... Assertion `false' failed"); they
+// must now return the OutOfSpec fallback, and the _string getters,
+// get_fields() and render_to_description() must report "OutOfSpec".
+// Boundaries: one past the last defined value (0x10 / 0x1F), a real-world
+// newer value (0x22 DDR5) and a far-out byte (0xEE).
+// On failure first check: MemoryDeviceEntry::get_form_factor() /
+// get_device_type() in libsmbios/src/memory_device_entry.cpp (an abort here
+// means an assert(false) is back on the unknown-value path).
+
+/// Regression: unknown form factor and device type fall back to OutOfSpec
+/// in the getter, the _string getter, get_fields() and the text render.
+BOOST_AUTO_TEST_CASE(MemoryDeviceEntryUndefinedFormFactorAndDeviceTypeFallBackToOutOfSpecTestCase)
+{
+    using namespace smbios::test;
+    const std::vector<std::pair<uint8_t, uint8_t>> undefined_values{
+        {0x10, 0x1F}, // one past FBDIMM / LPDDR4
+        {0x10, 0x22}, // DDR5 (SMBIOS 3.3+), unknown to this parser
+        {0xEE, 0xEE}, // far outside either range
+    };
+
+    for (const auto& [form_factor, device_type] : undefined_values) {
+        BOOST_TEST_CONTEXT("form_factor=" << static_cast<unsigned>(form_factor)
+                           << " device_type=" << static_cast<unsigned>(device_type)) {
+            std::vector<uint8_t> buffer = with_strings(build_buffer(0x28));
+            buffer[0x0E] = form_factor;
+            buffer[0x12] = device_type;
+            MemoryDeviceEntry entry(make_header(buffer), SMBiosVersion{3, 2}, buffer.data() + buffer.size());
+
+            BOOST_CHECK_EQUAL(entry.get_form_factor(), static_cast<uint8_t>(MemoryDeviceEntry::FormFactorOutOfSpec));
+            BOOST_CHECK_EQUAL(entry.get_device_type(), static_cast<uint8_t>(MemoryDeviceEntry::DeviceTypeOutOfSpec));
+            BOOST_CHECK_EQUAL(entry.get_form_factor_string(), std::string("OutOfSpec"));
+            BOOST_CHECK_EQUAL(entry.get_device_type_string(), std::string("OutOfSpec"));
+
+            check_fields_equal(entry.get_fields(), {
+                {"Array Handle", str("0x1")},
+                {"Error Handle", str("No Error")},
+                {"Total width", str("72 bits")},
+                {"Data width", str("72 bits")},
+                {"Device size", str("8192 MB")},
+                {"Form factor", str("OutOfSpec")},
+                {"Device set", str("None")},
+                {"Device locator", str("DIMM 0")},
+                {"Bank locator", str("BANK 0")},
+                {"Device type", str("OutOfSpec")},
+                {"Synchronous", true},
+                {"Device speed", str("2400 MHz")},
+                {"Manufacturer", str("Acme")},
+                {"Serial Number", str("SN1")},
+                {"Asset Tag", str("AT1")},
+                {"Part Number", str("PN1")},
+            });
+
+            const std::string text = entry.render_to_description();
+            BOOST_CHECK(text.find("Form factor: OutOfSpec\n") != std::string::npos);
+            BOOST_CHECK(text.find("Device type: OutOfSpec\n") != std::string::npos);
+        }
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

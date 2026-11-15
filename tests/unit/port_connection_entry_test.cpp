@@ -219,4 +219,68 @@ BOOST_AUTO_TEST_CASE(PortConnectionEntryGetFieldsHonoursLengthTiersTestCase)
     }
 }
 
+// Undefined firmware enum values (regression)
+//
+// Type: unit - deterministic, synthetic table, no hardware/privileges.
+// Scenario: firmware reports internal/external connector and port type
+// bytes not in connection_type_map_ / port_type_map_. The three getters
+// used to hit assert(false) and abort; they must now return the None
+// fallbacks (NoneConnector / NonePort), and the _string getters,
+// get_fields() and render_to_description() must report "None".
+// Boundaries: one past the last contiguous defined value (0x23 connector,
+// 0x22 port), a gap between defined ranges (0x50) and a value just below the
+// PC-98 block (0x9F).
+// On failure first check: PortConnectionEntry::get_internal_connection_type()
+// / get_external_connection_type() / get_port_type() in
+// libsmbios/src/port_connection_entry.cpp (an abort here means an
+// assert(false) is back on the unknown-value path).
+
+/// Regression: unknown connector/port types fall back to None everywhere.
+BOOST_AUTO_TEST_CASE(PortConnectionEntryUndefinedConnectorAndPortTypesFallBackToNoneTestCase)
+{
+    using namespace smbios::test;
+    struct UndefinedValues {
+        uint8_t internal_connection;
+        uint8_t external_connection;
+        uint8_t port_type;
+    };
+    const std::vector<UndefinedValues> undefined_values{
+        {0x23, 0x23, 0x22}, // one past the contiguous defined range
+        {0x50, 0x50, 0x50}, // gap between 0x22/0x21 and the PC-98 block
+        {0x9F, 0x9F, 0x9F}, // just below the PC-98 block
+    };
+
+    for (const UndefinedValues& values : undefined_values) {
+        BOOST_TEST_CONTEXT("internal=" << static_cast<unsigned>(values.internal_connection)
+                           << " external=" << static_cast<unsigned>(values.external_connection)
+                           << " port=" << static_cast<unsigned>(values.port_type)) {
+            std::vector<uint8_t> buffer = build_buffer(0x09);
+            buffer[0x05] = values.internal_connection;
+            buffer[0x07] = values.external_connection;
+            buffer[0x08] = values.port_type;
+            PortConnectionEntry entry(make_header(buffer), SMBiosVersion{2, 0}, buffer.data() + buffer.size());
+
+            BOOST_CHECK_EQUAL(entry.get_internal_connection_type(), static_cast<uint8_t>(PortConnectionEntry::NoneConnector));
+            BOOST_CHECK_EQUAL(entry.get_external_connection_type(), static_cast<uint8_t>(PortConnectionEntry::NoneConnector));
+            BOOST_CHECK_EQUAL(entry.get_port_type(), static_cast<uint8_t>(PortConnectionEntry::NonePort));
+            BOOST_CHECK_EQUAL(entry.get_internal_connection_string(), std::string("None"));
+            BOOST_CHECK_EQUAL(entry.get_external_connection_string(), std::string("None"));
+            BOOST_CHECK_EQUAL(entry.get_port_string(), std::string("None"));
+
+            check_fields_equal(entry.get_fields(), {
+                {"Internal Connector Type", num(PortConnectionEntry::NoneConnector)},
+                {"Internal Connection Type", str("None")},
+                {"External Connector Type", num(PortConnectionEntry::NoneConnector)},
+                {"External Connection Type", str("None")},
+                {"Port Type", str("None")},
+            });
+
+            const std::string text = entry.render_to_description();
+            BOOST_CHECK(text.find("Internal Connection Type: None\n") != std::string::npos);
+            BOOST_CHECK(text.find("External Connection Type: None\n") != std::string::npos);
+            BOOST_CHECK(text.find("Port Type: None\n") != std::string::npos);
+        }
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
