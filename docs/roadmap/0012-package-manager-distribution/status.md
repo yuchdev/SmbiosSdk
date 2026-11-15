@@ -6,7 +6,7 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
 
 | Story | Name                                                        | Status         | Tests |
 |-------|------------------------------------------------------------------|----------------|-------|
-| 01.0  | `libsmbios` install rules and whole-archive-safe package export | ⬜ Not started | - |
+| 01.0  | `libsmbios` install rules and whole-archive-safe package export | 🔶 In progress (1/3 tasks) | - |
 | 02.0  | Self-hosted vcpkg overlay/registry port for `smbios_c`           | ⬜ Not started | - |
 | 03.0  | GitHub Releases prebuilt artifacts - pipeline `package` stage (ADR 0005); blocked on 0014 | ⬜ Not started | - |
 | 04.0  | Release and publish automation - pipeline `verify`/`publish` stages (ADR 0005); blocked on 0014 | ⬜ Not started | - |

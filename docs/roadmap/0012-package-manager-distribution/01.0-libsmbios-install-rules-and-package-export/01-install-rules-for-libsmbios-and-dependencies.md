@@ -1,7 +1,7 @@
 # 01 - Install rules for `libsmbios` and its dependencies
 
 **Parent story:** [README.md](README.md)
-**Status:** ⬜ Not started
+**Status:** ✅ Complete
 
 ## Objective
 
@@ -15,7 +15,9 @@ has a complete dependency graph to generate `libsmbiosTargets.cmake` from.
 
 ## Files
 
-- **Modify** `libsmbios/src/CMakeLists.txt`:
+- **Modify** `libsmbios/CMakeLists.txt` (as built; `libsmbios/src/CMakeLists.txt` no longer exists, and
+  the target also gained `target_include_directories` with `BUILD_INTERFACE`/`INSTALL_INTERFACE`;
+  the Boost and macOS framework links use the same genex split):
   ```cmake
   install(TARGETS libsmbios
       EXPORT libsmbiosTargets

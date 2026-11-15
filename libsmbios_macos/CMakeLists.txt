@@ -10,7 +10,9 @@ file(GLOB SOURCES src/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/include/smbios/macos/*.h
 add_library(${TARGET} STATIC ${SOURCES})
 set_target_properties(${TARGET} PROPERTIES PREFIX "")
 
-target_include_directories(${TARGET} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(${TARGET} PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
 
 target_link_libraries(${TARGET} PUBLIC sys_interface libsmbios_posix_legacy)
 
@@ -21,6 +23,22 @@ target_link_libraries(${TARGET} PUBLIC sys_interface libsmbios_posix_legacy)
 # needed here.
 find_library(IOKIT_FRAMEWORK IOKit REQUIRED)
 find_library(COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
-target_link_libraries(${TARGET} PUBLIC ${IOKIT_FRAMEWORK} ${COREFOUNDATION_FRAMEWORK})
+# find_library() resolves to an absolute path under this machine's SDK, which
+# an installed package must not bake in (milestone 0012, Story 01.0): the
+# exported form names the frameworks, resolved by the consumer's own SDK.
+target_link_libraries(${TARGET} PUBLIC
+    $<BUILD_INTERFACE:${IOKIT_FRAMEWORK}>
+    $<BUILD_INTERFACE:${COREFOUNDATION_FRAMEWORK}>
+    $<INSTALL_INTERFACE:-framework IOKit>
+    $<INSTALL_INTERFACE:-framework CoreFoundation>)
 
 target_compile_options(${TARGET} PRIVATE ${SMBIOS_COMPILE_OPTIONS} ${SMBIOS_WARNING_OPTIONS})
+
+# Milestone 0012, Story 01.0, Task 01: join the libsmbiosTargets export set
+# and install this library's public headers (include/smbios/<segment>/...).
+install(TARGETS ${TARGET} EXPORT libsmbiosTargets
+    ARCHIVE DESTINATION lib
+    LIBRARY DESTINATION lib
+    RUNTIME DESTINATION bin)
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/smbios
+    DESTINATION include)

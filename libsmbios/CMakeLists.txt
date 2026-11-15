@@ -39,3 +39,18 @@ target_compile_options(${TARGET} PRIVATE ${SMBIOS_COMPILE_OPTIONS} ${SMBIOS_WARN
 target_link_options(${TARGET} PRIVATE ${SMBIOS_LINK_OPTIONS})
 
 target_link_libraries(${TARGET} PUBLIC sys_interface ${SMBIOS_LEGACY_LIB} ${SMBIOS_PLATFORM_LIB})
+
+# Milestone 0012, Story 01.0, Task 01: first install rules libsmbios has had.
+# include_directories() above is directory-scoped and exports nothing, so the
+# public header root is also declared on the target for consumers.
+target_include_directories(${TARGET} PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+
+install(TARGETS ${TARGET} EXPORT libsmbiosTargets
+    ARCHIVE DESTINATION lib
+    LIBRARY DESTINATION lib
+    RUNTIME DESTINATION bin)
+# One recursive copy covers libsmbios/{,tables/,formatters/}*.hpp.
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/libsmbios
+    DESTINATION include)
