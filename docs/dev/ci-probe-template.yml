@@ -1,0 +1,160 @@
+# Probe workflow template (milestone 0014, Story 04.0 Task 03; plan E6).
+#
+# A probe answers one question about the runner ("what is true there?": DNS,
+# a tool version, a file's mode), or runs one stage job on one leg ("does job
+# X pass on leg Y now?"), in minutes and without touching ci.yml. How to use
+# it: docs/dev/ci.md "Probe workflows and single-job runs".
+#
+#   git switch -c probe/<topic>
+#   cp docs/dev/ci-probe-template.yml .github/workflows/probe-<topic>.yml
+#   (keep only what the question needs) && git push -u origin probe/<topic>
+#
+# This file lives under docs/, not .github/workflows/, so it never runs by
+# itself. scripts/ci/tests/test_check_workflow_policy.py runs the policy gate
+# on it as a fixture, so it stays compliant when the rules change.
+#
+# Probe rules:
+#   1. Branch probe/<topic>, never merged. ci.yml ignores probe/** pushes;
+#      policy P9 fails the gate on any other branch, a pull request or master
+#      that carries a .github/workflows/probe-*.yml (stray probe workflow).
+#   2. One question per probe. Print only the answer, in RC1 form (an `ok:`,
+#      `info:` or `skip:` line per step, through stage.py).
+#   3. No secrets, no permissions beyond `contents: read`, and no firmware
+#      values. A probe that reads the live table prints counts only.
+#   4. Record the answer and the run ID in the relevant status.md, then
+#      delete the branch (local and remote).
+#
+# The trigger is a push to probe/** only (no workflow_dispatch, maintainer
+# ruling). Every `run:` step is one `python3 scripts/ci/stage.py ...` line
+# (P7), so a probe uses the same stage scripts as the pipeline and the same
+# idea works on TeamCity (a build configuration on a probe branch running the
+# same stage.py command).
+#
+# ---------------------------------------------------------------------------
+# Single-job run ("does job X pass on leg Y now?"): replace the whole `jobs:`
+# block below with ONE of these callers of a stage workflow. A caller job
+# carries no timeout-minutes, steps or permissions of its own (the stage
+# workflow has its own budgets and `contents: read`), and no secrets.
+# On a probe/** push stage.py applies the branch-push tier (plan Q1), so only
+# the Linux legs run: linux (build), linux-asan (sanitizers), linux-gui (gui).
+# Any other leg exits 2 ("scheduled on CI but not in the push tier"); test a
+# Windows or macOS leg through a same-repo pull request from a normal branch.
+#
+# jobs:
+#   build:
+#     uses: ./.github/workflows/stage-build.yml
+#     with:
+#       legs: '["linux"]'
+#
+# jobs:
+#   sanitizers:
+#     uses: ./.github/workflows/stage-sanitizers.yml
+#     with:
+#       legs: '["linux-asan"]'
+#
+# jobs:
+#   gui:
+#     uses: ./.github/workflows/stage-gui.yml
+#     with:
+#       legs: '["linux-gui"]'
+#
+# jobs:
+#   lint:
+#     uses: ./.github/workflows/stage-lint.yml
+#
+# (stage-lint.yml takes no inputs: it always runs its one Linux leg.)
+# ---------------------------------------------------------------------------
+name: probe
+
+on:
+  push:
+    branches: ['probe/**']
+
+permissions:
+  contents: read
+
+# Neutral names (ADR 0005 "Neutral environment names"), as in the stage
+# workflows. runner.temp is only available at step level, so CI_TEMP_DIR is
+# set on each stage step.
+env:
+  CI_PLATFORM: github
+  CI_REPORTER: github
+  CI_RUN_ID: ${{ github.run_id }}
+  CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+  CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  CI_EVENT: ${{ github.ref_type == 'tag' && 'tag' || github.event_name == 'pull_request' && 'pr' || github.event_name == 'workflow_dispatch' && 'manual' || github.event_name }}
+  CI_REF: ${{ github.ref }}
+  CI_REF_NAME: ${{ github.ref_name }}
+  CI_COMMIT: ${{ github.sha }}
+  CI_WORKSPACE: ${{ github.workspace }}
+
+jobs:
+  probe:
+    name: probe (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # The pinned labels of scripts/ci/pins.json "runners" (P3; the test
+        # keeps this list equal to it). Comment out the ones you do not need.
+        os:
+          - ubuntu-24.04
+          - macos-15
+          - windows-2022
+    env:
+      CI_JOB: probe
+      # The lint stage has one leg, `linux`; its `env` step only reads the
+      # host, so it runs on every label. CI_IMAGE names the real label in the
+      # RC4 line (`env: lint/linux image=<label> | ...`).
+      CI_LEG: linux
+      CI_IMAGE: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 10
+        with:
+          persist-credentials: false
+
+      # RC4 header (print_env.py through the lint stage's `env` step): one
+      # line with the cmake, ctest, ninja, compiler, python and vcpkg
+      # versions. This also answers the `ctest --version` question, so that
+      # example needs no extra step. The Windows image has `python` but no
+      # `python3`, and a run: line must be a literal (P6/P7), hence the twin.
+      - name: Print env
+        id: env
+        if: runner.os != 'Windows'
+        run: python3 scripts/ci/stage.py lint --only env
+        timeout-minutes: 10
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+
+      - name: Print env (Windows)
+        id: env-win
+        if: runner.os == 'Windows'
+        run: python scripts/ci/stage.py lint --only env
+        timeout-minutes: 10
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+
+      # PROBE STEPS
+      # Each probe step is one `python3 scripts/ci/stage.py <stage> --only
+      # <step>` line (P7: no direct ci_step.py, no shell, no quoting). Keep
+      # only the step your question needs. A question that no stage step
+      # answers yet: add a `--only` step to stage.py on the probe branch
+      # itself (it is never merged), running the command through ci_step.
+      #
+      # Example: DNS probe of the apt hosts (Linux only). The C15 `packages`
+      # step of the linux-gui leg resolves every host in the active apt
+      # sources (getent hosts, 5 s each) and prints one line,
+      # `info: apt mirror: <default|kernel.org> (<k> of <n> hosts
+      # unresolved: <names>)`, then installs the GUI packages.
+      - name: Probe apt DNS
+        id: probe-apt-dns
+        if: runner.os == 'Linux'
+        run: python3 scripts/ci/stage.py build --only packages
+        timeout-minutes: 10
+        env:
+          CI_LEG: linux-gui
+          CI_TEMP_DIR: ${{ runner.temp }}

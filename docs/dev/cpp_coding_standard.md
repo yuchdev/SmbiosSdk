@@ -79,3 +79,18 @@ hand-built `DMIHeader`/raw buffer, no real `SMBios`/hardware) - see
 pattern. Escalate a bug a unit test surfaces to `cpp-expert` for a fix in the
 same pass, per `testing-expert`'s own rule - never leave a known-wrong
 behavior as a permanently-red test.
+
+### CI gates (enforced by `.github/workflows/ci.yml` and `scripts/ci/`)
+
+Operational detail: [docs/dev/ci.md](/docs/dev/ci.md). No clang-tidy or cppcheck gate exists.
+
+| Gate | What it blocks | Enforced by |
+|------|----------------|-------------|
+| Workflow policy P1-P15 | Unpinned or unlisted actions, floating runner labels, missing timeouts, `continue-on-error`, shell logic in `run:`, secrets and unsafe triggers, missing `persist-credentials: false` | `scripts/ci/check_workflow_policy.py`, run by the `lint` job (`scripts/ci/lint.py`) |
+| Sanitizers, UBSan fatal | Any ASan finding, or UB (the build uses `-fno-sanitize-recover=undefined`, `UBSAN_OPTIONS=halt_on_error=1`), while the unprivileged tests run on `linux-asan`/`macos-asan` | `stage-sanitizers.yml` via `scripts/ci/stage.py`, `ctest_report.py` |
+| Unprivileged tests | A failing `unit`/`mock`/`c_abi`/`smbios_cli_unknown_format*`/example test (Windows `build` leg and both sanitizer legs) | `scripts/ci/test_sets.json` set `unprivileged` |
+| GUI guards R-7, R-8 | The test hook string in the shipped `smbios_gui`; any `gui-local` or `smbios_gui_autoexit` test or file configured on CI (both fail closed) | `scripts/ci/gui_guards.py`, `gui` job |
+| CLI format check | Any `--format` output that is not well-formed, or no-flag output differing from `--format text` (counts only) | `scripts/ci/cli_format_check.py`, `build` job |
+| Repo checks | Doc samples differing from the golden files; `c-versions/` reachable from the build; version-site drift | `check_doc_samples.py`, `check_cversions_isolation.py`, `scripts/ci/check_versions.py`, `lint` job |
+
+The live-table tests (`smbios_integration_test`, `smbios_perf_test`, `smbios_cli_format_csv`) are best-effort in CI, not a gate.

@@ -178,8 +178,8 @@ uint8_t MemoryDeviceEntry::get_form_factor() const
         return (*it).first;
     }
 
-    // should not be undefined values
-    assert(false);
+    // Firmware-supplied value outside the known set: report the out-of-spec
+    // fallback rather than aborting (never trust table bytes).
     return FormFactorValue::FormFactorOutOfSpec;
 }
 
@@ -226,8 +226,8 @@ uint8_t MemoryDeviceEntry::get_device_type() const
         return (*it).first;
     }
 
-    // should not be undefined values
-    assert(false);
+    // Firmware-supplied value outside the known set: report the out-of-spec
+    // fallback rather than aborting (never trust table bytes).
     return DeviceTypeValue::DeviceTypeOutOfSpec;
 }
 

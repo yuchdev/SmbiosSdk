@@ -1,0 +1,88 @@
+# Reusable `lint` stage (milestone 0014, Story 03.0 Task 01; ADR 0005 D8).
+# One Linux job, one stage-command step (plus the Story 04.0 job-summary
+# steps at the end): RC4 header, ci_step self-test,
+# lint.py (scripts/ci tests, actionlint, policy gate on ci.yml and
+# stage-*.yml), check_versions.py (SC3), C01 c-versions isolation, C02 doc
+# samples. Every other job of the pipeline `needs:` this one, so a broken
+# workflow, script or policy fails before the expensive legs start.
+name: stage-lint
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# Neutral names (ADR 0005 "Neutral environment names"). runner.temp is only
+# available at step level, so CI_TEMP_DIR is set on the step.
+env:
+  CI_PLATFORM: github
+  CI_REPORTER: github
+  CI_RUN_ID: ${{ github.run_id }}
+  CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+  CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  CI_EVENT: ${{ github.ref_type == 'tag' && 'tag' || github.event_name == 'pull_request' && 'pr' || github.event_name == 'workflow_dispatch' && 'manual' || github.event_name }}
+  CI_REF: ${{ github.ref }}
+  CI_REF_NAME: ${{ github.ref_name }}
+  CI_COMMIT: ${{ github.sha }}
+  CI_BASE_COMMIT: ${{ github.event.pull_request.base.sha || github.event.before }}
+  CI_WORKSPACE: ${{ github.workspace }}
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CI_JOB: lint
+      CI_LEG: linux
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 3
+        with:
+          persist-credentials: false
+
+      - name: Lint stage
+        id: stage
+        run: python3 scripts/ci/stage.py lint
+        timeout-minutes: 8
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+
+      # Story 04.0 Task 01 (plan E9): the job block (RC3 records + RC4 line,
+      # at most 30 lines / 4 KiB) into the job summary, and the same records
+      # as $CI_ARTIFACT_DIR/summary-lint-<leg>.json for the run-level `report`
+      # job. The twin step runs on a failed or cancelled job and passes
+      # --job-failed, so a failure outside any recorded step (a timeout, a
+      # platform step) is never summarised as PASS.
+      - name: Job summary
+        id: summary
+        if: success() && steps.checkout.outcome == 'success'
+        run: python3 scripts/ci/stage.py summary
+        timeout-minutes: 2
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+
+      - name: Job summary (failed job)
+        id: summary-failed
+        if: (failure() || cancelled()) && steps.checkout.outcome == 'success'
+        run: python3 scripts/ci/stage.py summary --job-failed
+        timeout-minutes: 2
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+
+      # The summary artifact: one literal file, no log content, at most 8 KiB,
+      # 3-day retention (plan Q3). Read only by the `report` job of ci.yml.
+      - name: Upload job summary
+        id: upload-summary
+        if: always() && steps.checkout.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        timeout-minutes: 2
+        with:
+          name: summary-lint-linux
+          path: ${{ runner.temp }}/artifacts/summary-lint-linux.json
+          include-hidden-files: false
+          if-no-files-found: ignore
+          retention-days: 3

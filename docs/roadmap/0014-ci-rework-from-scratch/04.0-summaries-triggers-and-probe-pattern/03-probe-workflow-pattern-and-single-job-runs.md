@@ -1,7 +1,7 @@
 # 03 - Probe-workflow pattern and single-job runs
 
 **Parent story:** [README.md](README.md)
-**Status:** ⬜ Not started
+**Status:** ✅ Complete locally (real probe proof pending)
 **Depends on:** Story 02.0 (pinned labels), Task 02 (dispatch inputs)
 
 ## Objective
@@ -46,3 +46,11 @@ None beyond the P9 extension.
 
 - [ ] Template committed and policy-clean; P9 catches a stray probe.
 - [ ] One probe and one single-job dispatch performed, with wall-clock times recorded in `status.md`.
+
+## As-built notes (2026-11-14, local part)
+
+- **No dispatch** (maintainer ruling): tool 1 is a probe-branch workflow that calls a `stage-*.yml` with `legs: '["<leg>"]'` (Task 02's input); the template has only `on: push: branches: ['probe/**']`.
+- **Limit:** on a `probe/**` push `stage.py` applies the branch-push tier, so only `linux`, `linux-asan` and `linux-gui` can run; Windows/macOS legs need a same-repo PR.
+- **P9:** a `probe-*.yml` off a `probe/**` branch is `P9: expected stray probe workflow: 0 -> actual 1 (<file>)`; the branch comes from `CI_REF` (a tag named `probe/x` does not count), unknown means strict.
+- **Probe steps** go through `stage.py` (P7 allows `ci_step.py` only in lint); a question no stage step answers gets a `--only` step on the probe branch itself.
+- **Open (runner-side):** `probe/runner-versions` on all pinned labels with push-to-answer time, and one single-job run, both recorded in `status.md`.

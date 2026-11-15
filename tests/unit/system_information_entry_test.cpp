@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <string>
 #include <memory>
 #include <vector>
 
@@ -244,6 +245,48 @@ BOOST_AUTO_TEST_CASE(SystemInformationEntryGetFieldsHonoursLengthTiersTestCase)
         {"SKU Number", str("Not Specified")},
         {"Family", str("Not Specified")},
     });
+}
+
+// Undefined firmware enum value (regression)
+//
+// Type: unit - deterministic, synthetic table, no hardware/privileges.
+// Scenario: firmware reports a wake-up type byte not in wake_up_type_map_.
+// get_wake_up_type() used to hit assert(false) and abort; it must now return
+// the Reserved fallback, and get_wake_up_type_string(), get_fields() and
+// render_to_description() must report "Reserved".
+// Boundaries: one past the last defined value (0x09, after
+// ACPowerRestored = 0x08) and the top of the byte range (0xFF).
+// On failure first check: SystemInformationEntry::get_wake_up_type() in
+// libsmbios/src/system_information_entry.cpp (an abort here means an
+// assert(false) is back on the unknown-value path).
+
+/// Regression: an unknown wake-up type falls back to Reserved everywhere.
+BOOST_AUTO_TEST_CASE(SystemInformationEntryUndefinedWakeUpTypeFallsBackToReservedTestCase)
+{
+    using namespace smbios::test;
+    for (const uint8_t wake_up_type : {static_cast<uint8_t>(0x09), static_cast<uint8_t>(0xFF)}) {
+        BOOST_TEST_CONTEXT("wake_up_type=" << static_cast<unsigned>(wake_up_type)) {
+            std::vector<uint8_t> buffer = build_fields_buffer(0x1B);
+            buffer[0x18] = wake_up_type;
+            SystemInformationEntry entry(make_header(buffer), SMBiosVersion{2, 6}, buffer.data() + buffer.size());
+
+            BOOST_CHECK_EQUAL(entry.get_wake_up_type(), static_cast<uint8_t>(SystemInformationEntry::Reserved));
+            BOOST_CHECK_EQUAL(entry.get_wake_up_type_string(), std::string("Reserved"));
+
+            check_fields_equal(entry.get_fields(), {
+                {"Manufacturer", str("Acme")},
+                {"Product Name", str("Box 9000")},
+                {"Version", str("v2")},
+                {"Serial Number", str("SN42")},
+                {"UUID", str("13121110-1514-1716-1819-1a1b1c1d1e1f")},
+                {"Wake-up Type", str("Reserved")},
+                {"SKU Number", str("SKU-7")},
+                {"Family", str("Servers")},
+            });
+
+            BOOST_CHECK(entry.render_to_description().find("Wake-up Type: Reserved\n") != std::string::npos);
+        }
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
