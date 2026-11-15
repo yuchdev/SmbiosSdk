@@ -170,7 +170,7 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
 
 ## Milestone 0014 close (2026-11-15)
 
-PR #11 merged to `master` (merge commit `6161611`). The first `master` push run on the rebuilt pipeline (43707799474) passed all ten jobs (`lint`, three `build`, three `sanitizers`/`gui` legs each OS as scheduled, `plan`, `report`) on the full tier.
+PR #11 merged to `master` (merge commit `6161611`). The first `master` push run on the rebuilt pipeline (43707799474) passed all eleven jobs (`plan`, `lint`, three `build` legs, two `sanitizers` legs (Linux and macOS), three `gui` legs, and `report`) on the full tier.
 
 **Exit gate evidence:** parity C01-C22 21 of 21 kept (parity run, Story 03.0); negative proofs 1-6 on real runners (run IDs above); bounded logs through RC1-RC3 and the Q3 failure-only upload proof; PR/push/`master` runs green with the `CI: PASS` run table; concurrency cancellation observed (43700128493, 43700133162 cancelled); `covered by push run` suppression observed (43699210987); probe pattern run once (43696811006).
 
@@ -178,7 +178,7 @@ PR #11 merged to `master` (merge commit `6161611`). The first `master` push run 
 
 **Carried forward (not blockers):**
 - Maintainer repository settings: rulesets, `release`/`staging` environment protection, CODEOWNERS (checklist in `docs/dev/ci.md`).
-- Docs-only (lint-only) tier is shown on `master` only; it is covered by `test_classify_changes.py` until the first docs-only `master` push.
+- Hosted-run proof of the docs-only (lint-only) tier remains outstanding; local coverage is in `test_classify_changes.py`, and the first docs-only `master` push is yet to be observed.
 - Negative proof 3 not re-run with the one-row `gui` summary.
 - Dead `workflow_dispatch && 'manual'` branch in the `CI_EVENT` expressions (cosmetic).
 - Single-job probe runs reach only the Linux legs.
