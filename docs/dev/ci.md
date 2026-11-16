@@ -75,7 +75,7 @@ Every project-owned workflow step is one such line (plan SC1, policy P7); `.gith
 
 | Stage | Steps (`--only`) | Inventory rows |
 |-------|------------------|----------------|
-| `lint` | `env`, `self-test`, `lint`, `versions`, `cversions`, `doc-samples` | C01, C02, C21, C22 + SC3 |
+| `lint` | `env`, `self-test`, `lint`, `versions`, `registry` (`check_vcpkg_registry.py`: `versions/` match the committed `ports/smbios-c`, see [vcpkg-registry.md](vcpkg-registry.md)), `cversions`, `doc-samples` | C01, C02, C21, C22 + SC3 |
 | `build` | `prepare` (pinned tools, RC4 header, self-test, vcpkg cache key), `compile` (vcpkg bootstrap, configure, cache health, build), `install` (packaging legs only) | C03, C04, C11 |
 | `test` | `unit` (C06, C13), `cli-formats` (C07, C08, C09), `live-table` (C10, C14, Q4; best-effort, counts-only), `consumer` (`build` job legs only: `scripts/ci/consumer_smoke.py` installs the built tree and builds `tests/packaging/libsmbios_consumer` against the installed `libsmbios` package, with no whole-archive flag of its own; milestone 0012 Story 01.0) | C06-C10, C13, C14 |
 

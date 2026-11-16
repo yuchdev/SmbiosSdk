@@ -59,6 +59,7 @@ from typing import (Any, Callable, Dict, Final, Iterator, List, Mapping, Optiona
 
 import apt_install  # noqa: E402
 import bootstrap_vcpkg  # noqa: E402
+import check_vcpkg_registry  # noqa: E402
 import check_versions  # noqa: E402
 import check_workflow_policy as policy_gate  # noqa: E402
 import consumer_smoke  # noqa: E402
@@ -393,6 +394,7 @@ def _patched(tracer: Tracer, temp: Path) -> Iterator[None]:
         (bootstrap_vcpkg, "main", call("bootstrap_vcpkg")),
         (apt_install, "main", call("apt_install")),
         (check_versions, "run", call("check_versions")),
+        (check_vcpkg_registry, "run", call("check_vcpkg_registry")),
         (cli_format_check, "find_cli", lambda *_a, **_k: Path("smbios")),
         (cli_format_check, "check_format", check_format),
         (cli_format_check, "noflag_equals_text", noflag),

@@ -19,6 +19,18 @@
       "file": "libsmbios/CMakeLists.txt",
       "extractor": "cmake_set:LIBSMBIOS_VERSION",
       "rule": "derived"
+    },
+    {
+      "site": "smbios-c port version",
+      "file": "ports/smbios-c/vcpkg.json",
+      "extractor": "json_key:version",
+      "rule": "equal"
+    },
+    {
+      "site": "smbios-c registry baseline",
+      "file": "versions/baseline.json",
+      "extractor": "json_key:default.smbios-c.baseline",
+      "rule": "equal"
     }
   ]
 }
