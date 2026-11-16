@@ -1,7 +1,9 @@
 # 03 - Tests
 
 **Parent story:** [README.md](README.md)
-**Status:** ⬜ Not started
+**Status:** ✅ Complete (macOS; CI wiring deferred to 04.0)
+
+**As built:** fixture `tests/packaging/smbios_c_vcpkg_consumer/` + driver `scripts/ci/vcpkg_registry_smoke.py` (registry = this repository at `HEAD`, no overlay). Verified on macOS. **CI wiring is deferred to Story 04.0** (the `verify` stage): a cold Boost build exceeds the build job's 8-minute test-step budget, and the stage workflow policy allows no new job outside `stage-package/verify/publish`. Windows/Linux not yet run.
 
 ## Objective
 
