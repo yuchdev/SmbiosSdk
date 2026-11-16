@@ -1,7 +1,9 @@
 # 01 - Portfile and port vcpkg.json
 
 **Parent story:** [README.md](README.md)
-**Status:** ⬜ Not started
+**Status:** ✅ Complete
+
+**As built:** `vcpkg_from_git` takes a full commit `REF` (no `SHA512` argument; the commit hash is the integrity check), set to the licensed commit `0bfc9a0`. The port declares `boost-date-time`, `boost-iostreams`, `boost-program-options` and `boost-test` because the unmodified root build requires all four (the CLI and tests have no opt-out; `SMBIOS_BUILD_CLI`/`SMBIOS_BUILD_TESTS` is a named follow-up, not done here). Story 01.0's `libsmbios` install output is pruned by the portfile so the package ships the C ABI only. See status.md Notes & decisions (2026-11-16).
 
 ## Objective
 

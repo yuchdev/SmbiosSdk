@@ -77,6 +77,8 @@ LABEL: Final = "vcpkg bootstrap"
 CACHE_DIR_NAME: Final = vcpkg_cache_report.CACHE_DIR_NAME
 #: Per-call time limits (the step budget is 5 min, Task 03 enforces it).
 GIT_TIMEOUT_S: Final = 180.0
+FETCH_ATTEMPTS: Final = 2
+FETCH_RETRY_DELAY_S: Final = 1.0
 BOOTSTRAP_TIMEOUT_S: Final = 180.0
 VERSION_TIMEOUT_S: Final = 30.0
 
@@ -188,9 +190,11 @@ def pinned_baseline(repo_root: Path, pins_file: Path) -> str:
     return expected
 
 
-def _step(ctx: _Ctx, label: str, argv: Sequence[str], timeout_s: float) -> Path:
+def _step(ctx: _Ctx, label: str, argv: Sequence[str], timeout_s: float, *,
+          best_effort_reason: Optional[str] = None) -> Path:
     """Run one sub-step through ``ci_step``; return its log path or raise (already reported)."""
-    result = ci_step.run_step(label, argv, patterns=["vcpkg"], best_effort_reason=None,
+    result = ci_step.run_step(label, argv, patterns=["vcpkg"],
+                              best_effort_reason=best_effort_reason,
                               summary=None, log_dir=ctx.log_dir, reporter=ctx.reporter,
                               results_file=ctx.results, timeout_s=timeout_s)
     if result.exit != 0:
@@ -218,8 +222,18 @@ def checkout(sha: str, dest: Path, *, ctx: Optional[_Ctx] = None) -> None:
     ctx = ctx or _default_ctx()
     git = ["git", "-C", str(dest)]
     _step(ctx, "vcpkg git init", git + ["init", "-q"], GIT_TIMEOUT_S)
-    _step(ctx, "vcpkg git fetch", git + ["fetch", "-q", "--depth", "1", VCPKG_URL, sha],
-          GIT_TIMEOUT_S)
+    fetch = git + ["fetch", "-q", "--depth", "1", VCPKG_URL, sha]
+    for attempt in range(FETCH_ATTEMPTS):
+        final_attempt = attempt + 1 == FETCH_ATTEMPTS
+        label = "vcpkg git fetch" if final_attempt else f"vcpkg git fetch attempt {attempt + 1}"
+        try:
+            _step(ctx, label, fetch, GIT_TIMEOUT_S,
+                  best_effort_reason=None if final_attempt else "transient failure; retrying")
+            break
+        except BootstrapError:
+            if final_attempt:
+                raise
+            time.sleep(FETCH_RETRY_DELAY_S)
     _step(ctx, "vcpkg git checkout", git + ["checkout", "-q", "--detach", "FETCH_HEAD"],
           GIT_TIMEOUT_S)
     log = _step(ctx, "vcpkg git rev-parse", git + ["rev-parse", "HEAD"], GIT_TIMEOUT_S)

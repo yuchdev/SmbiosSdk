@@ -1,7 +1,7 @@
 # Story 02.0 - Self-Hosted vcpkg Overlay/Registry Port for `smbios_c`
 
 **Parent milestone:** [plan.md](../plan.md)
-**Status:** ⬜ Not started
+**Status:** 🔶 In progress (3/3 tasks; story-close gates pending)
 **Depends on:** none (technical) - see Note below
 
 ## Scope
@@ -69,9 +69,9 @@ submission.
 
 | #  | Document                                                       | Status         | Blocks |
 |----|-----------------------------------------------------------------|----------------|--------|
-| 01 | [Portfile and port vcpkg.json](01-portfile-and-port-vcpkg-json.md) | ⬜ Not started | 02     |
-| 02 | [Self-hosted git registry layout](02-self-hosted-git-registry-layout.md) | ⬜ Not started | 03     |
-| 03 | [Tests](03-tests.md)                                            | ⬜ Not started | -      |
+| 01 | [Portfile and port vcpkg.json](01-portfile-and-port-vcpkg-json.md) | ✅ Complete | 02     |
+| 02 | [Self-hosted git registry layout](02-self-hosted-git-registry-layout.md) | ✅ Complete | 03     |
+| 03 | [Tests](03-tests.md)                                            | ✅ Complete | -      |
 
 ## Key constraints
 

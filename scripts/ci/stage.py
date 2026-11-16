@@ -21,7 +21,9 @@ this order):
     ``env`` (RC4 header), ``self-test`` (``ci_step self-test``), ``lint``
     (``lint.py``: script tests, actionlint, policy gate), ``versions``
     (``check_versions.py``, SC3; ``--tag $CI_REF_NAME`` on a tag event),
-    ``cversions`` (inventory C01), ``doc-samples`` (C02).
+    ``registry`` (``check_vcpkg_registry.py``: ``versions/`` match the committed
+    ``ports/smbios-c``; 0012 Story 02.0), ``cversions`` (inventory C01),
+    ``doc-samples`` (C02).
 ``build`` (stops at the first failing step):
     ``prepare`` - pinned tools into a job-local venv (``$CI_TEMP_DIR/ci-tools``,
     printed after the header), the RC4 header, ``ci_step self-test``, and the
@@ -139,7 +141,7 @@ REQUIREMENTS_FILE: Final = Path(_HERE) / "requirements-tools.txt"
 STAGES: Final = ("lint", "build", "test", "package", "verify", "publish")
 #: Steps of each implemented stage, in run order (the ``--only`` allowlist).
 STEPS: Final[Dict[str, Tuple[str, ...]]] = {
-    "lint": ("env", "self-test", "lint", "versions", "cversions", "doc-samples"),
+    "lint": ("env", "self-test", "lint", "versions", "registry", "cversions", "doc-samples"),
     "build": ("packages", "prepare", "compile", "install"),
     "test": ("unit", "cli-formats", "live-table", "consumer", "gui-binary", "gui-hooks",
              "gui-ci", "gui-local"),
@@ -541,6 +543,12 @@ def step_versions(ctx: Context) -> int:
     return check_versions.run(ctx.workspace, tag=tag, reporter=ctx.reporter, results=ctx.results)
 
 
+def step_registry(ctx: Context) -> int:
+    """0012 Story 02.0: the vcpkg registry's ``versions/`` match ``ports/smbios-c`` at HEAD."""
+    import check_vcpkg_registry
+    return check_vcpkg_registry.run(ctx.workspace, reporter=ctx.reporter, results=ctx.results)
+
+
 def step_cversions(ctx: Context) -> int:
     """Inventory C01: nothing builds, includes or tracks the GPL ``c-versions/``."""
     return ctx.run("c-versions isolation", _script(ctx, "scripts/check_cversions_isolation.py"),
@@ -908,7 +916,8 @@ def step_gui_local(ctx: Context) -> int:
 StepFn = Callable[[Context], int]
 STEP_FUNCTIONS: Final[Dict[str, Dict[str, StepFn]]] = {
     "lint": {"env": step_env, "self-test": step_self_test, "lint": step_lint,
-             "versions": step_versions, "cversions": step_cversions,
+             "versions": step_versions, "registry": step_registry,
+             "cversions": step_cversions,
              "doc-samples": step_doc_samples},
     "build": {"packages": step_packages, "prepare": step_prepare, "compile": step_compile,
               "install": step_install},
