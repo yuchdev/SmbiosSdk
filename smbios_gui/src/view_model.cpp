@@ -45,14 +45,17 @@ size_t decode_valid_utf8(const std::string& text, size_t pos, uint32_t& code_poi
         return static_cast<uint32_t>(static_cast<unsigned char>(text[i]));
     };
     const uint32_t lead = byte_at(pos);
+
     if (lead < 0x80) {
         code_point = lead;
         return 1;
     }
+
     if (lead < 0xE0) {
         code_point = ((lead & 0x1F) << 6) | (byte_at(pos + 1) & 0x3F);
         return 2;
     }
+
     if (lead < 0xF0) {
         code_point = ((lead & 0x0F) << 12) | ((byte_at(pos + 1) & 0x3F) << 6)
                    | (byte_at(pos + 2) & 0x3F);
@@ -91,11 +94,14 @@ std::vector<FieldRow> decode_fields(const DMIHeader& header, SMBios& bios)
     std::vector<FieldRow> rows;
     const std::unique_ptr<AbstractSMBiosEntry> entry = SMBiosEntryFactory{}.create(
         header, bios.get_smbios_version(), bios.get_table_base() + bios.get_table_size());
+
     if (!entry) {
         return rows;
     }
+
     std::vector<NamedField> fields = entry->get_fields();
     rows.reserve(fields.size());
+
     for (NamedField& field : fields) {
         rows.push_back(FieldRow{std::move(field.name), std::move(field.value)});
     }
@@ -207,8 +213,7 @@ std::string display_text(const std::string& raw)
     // at most kDisplayTextMaxBytes + 1 raw bytes (plus the rest of the last
     // chunk): the cost is O(kDisplayTextMaxBytes), not O(raw.size()).
     constexpr size_t kMaxChunkBytes = 4;
-    constexpr size_t kSuffixReserve =
-        (sizeof(kTruncatedPrefix) - 1) + kMaxCountDigits + (sizeof(kTruncatedSuffix) - 1);
+    constexpr size_t kSuffixReserve = (sizeof(kTruncatedPrefix) - 1) + kMaxCountDigits + (sizeof(kTruncatedSuffix) - 1);
     static_assert(kSuffixReserve < kDisplayTextMaxBytes);
     constexpr size_t kKeepBudget = kDisplayTextMaxBytes - kSuffixReserve;
 
@@ -219,11 +224,13 @@ std::string display_text(const std::string& raw)
     size_t pos = 0;
     while (pos < raw.size() && safe.size() <= kDisplayTextMaxBytes) {
         size_t end = pos + 1;
+        
         while (end < raw.size() && end - pos < kMaxChunkBytes
                && is_continuation_byte(static_cast<unsigned char>(raw[end]))) {
             ++end;
         }
         const std::string valid = smbios::sanitize_utf8(raw.substr(pos, end - pos));
+
         for (size_t at = 0; at < valid.size();) {
             uint32_t code_point = 0;
             const size_t length = decode_valid_utf8(valid, at, code_point);
@@ -235,6 +242,7 @@ std::string display_text(const std::string& raw)
             at += length;
         }
         pos = end;
+
         if (safe.size() <= kKeepBudget) {
             keep_output = safe.size();
             keep_raw = pos;
