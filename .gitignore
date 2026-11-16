@@ -1,4 +1,14 @@
+# =============================================================================
+# Build output, generated files, caches, logs, temporary and system-specific
+# files for this C++ (CMake/vcpkg) + Python (CI tooling) repository.
+# Anything listed here must never be committed; if a generated file is ever
+# needed in the tree, add an explicit "!" exception next to its rule (see the
+# CI fixture logs below).
+# =============================================================================
+
+# -----------------------------------------------------------------------------
 # Build directories
+# -----------------------------------------------------------------------------
 .vs/
 .vscode/
 build/
@@ -20,10 +30,31 @@ vcpkg_installed/
 # and must not be removed - nothing under c-versions/ may ever be tracked.
 /c-versions/
 
-logs/*
-*.log
+# -----------------------------------------------------------------------------
+# C++ / CMake / Ninja generated files
+# -----------------------------------------------------------------------------
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+CTestTestfile.cmake
+CPackConfig.cmake
+CPackSourceConfig.cmake
+_CPack_Packages/
+DartConfiguration.tcl
+Testing/
+compile_commands.json
+install_manifest.txt
+_deps/
+.cache/
+.clangd/
+.ccls-cache/
+.ninja_deps
+.ninja_log
+build.ninja
+rules.ninja
 
-# User-specific
+# User-specific CMake files
 CMakeLists.txt.user
 CMakeUserPresets.json
 
@@ -32,19 +63,21 @@ uri.txt
 
 # Prerequisites
 *.d
+*.dep
 
-# Compiled Object files
+# Compiled object files
 *.slo
 *.lo
 *.o
 *.obj
 
-# Precompiled Headers
+# Precompiled headers
 *.gch
 *.pch
 
-# Compiled Dynamic libraries
+# Compiled dynamic libraries
 *.so
+*.so.*
 *.dylib
 *.dll
 
@@ -52,7 +85,7 @@ uri.txt
 *.mod
 *.smod
 
-# Compiled Static libraries
+# Compiled static libraries
 *.lai
 *.la
 *.a
@@ -63,55 +96,96 @@ uri.txt
 *.out
 *.app
 
-# E2E runtime artifacts
-qa_failures/
-tests/e2e/failures/*
-!tests/e2e/failures/.gitkeep
-tests/e2e/tmp/
-
-# C++ / CMake
-CMakeCache.txt
-CMakeFiles/
-cmake_install.cmake
-CTestTestfile.cmake
-Testing/
-compile_commands.json
-install_manifest.txt
-_deps/
-.cache/
-.clangd/
+# Debug symbols, linker and compiler by-products
 *.ilk
 *.pdb
+*.idb
+*.ipdb
+*.iobj
 *.exp
+*.rsp
+*.tlog
+*.lastbuildstate
 *.dSYM/
+*.res
+
+# Coverage, profiling and sanitizer output
 *.gcda
 *.gcno
 *.gcov
 *.profraw
 *.profdata
-/core
-vgcore.*
+gmon.out
+perf.data
+perf.data.*
+callgrind.out.*
+cachegrind.out.*
+massif.out.*
+*.log.[0-9]*
 
-# Python
+# Core dumps and crash dumps
+/core
+core.[0-9]*
+vgcore.*
+*.core
+*.stackdump
+*.dmp
+*.mdmp
+
+# libFuzzer artifacts written to the working directory (docs/dev/fuzzing.md)
+crash-[0-9a-f]*
+leak-[0-9a-f]*
+timeout-[0-9a-f]*
+oom-[0-9a-f]*
+slow-unit-[0-9a-f]*
+
+# -----------------------------------------------------------------------------
+# Python (CI tooling under scripts/ and .claude/hooks/)
+# -----------------------------------------------------------------------------
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyd
+*.egg
 *.egg-info/
 .eggs/
 dist/
+develop-eggs/
+sdist/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+.Python
 .venv/
 venv/
 env/
+.python-version
 .pytest_cache/
 .mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+.pyre/
 .ruff_cache/
 .tox/
+.nox/
+.hypothesis/
+cython_debug/
 .coverage
 .coverage.*
+coverage.xml
+nosetests.xml
+*.cover
+*.py,cover
 htmlcov/
 .ipynb_checkpoints/
 
-# Node
+# -----------------------------------------------------------------------------
+# Node / Tauri (kept from the project template)
+# -----------------------------------------------------------------------------
 node_modules/
 npm-debug.log*
 yarn-debug.log*
@@ -127,25 +201,80 @@ pnpm-debug.log*
 .vite/
 .turbo/
 *.tsbuildinfo
-
-# Tauri
 src-tauri/target/
 src-tauri/gen/
 **/src-tauri/WixTools/
 
-# IDEs / editors
+# -----------------------------------------------------------------------------
+# E2E runtime artifacts
+# -----------------------------------------------------------------------------
+qa_failures/
+tests/e2e/failures/*
+!tests/e2e/failures/.gitkeep
+tests/e2e/tmp/
+
+# -----------------------------------------------------------------------------
+# IDEs and editors
+# -----------------------------------------------------------------------------
 .idea/
+*.iml
+.fleet/
+.history/
+.project
+.cproject
+.settings/
+*.kdev4
+.kateproject
+*.sublime-workspace
+# Visual Studio / MSBuild
+*.suo
+*.user
+*.ncb
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+ipch/
+# Xcode
+xcuserdata/
+*.xcuserstate
+DerivedData/
+# Vim / Emacs / generic backup and swap files
 *.swp
 *.swo
+*.sw[a-p]
 *~
-.fleet/
+.#*
+\#*\#
 
-# OS files
+# -----------------------------------------------------------------------------
+# Operating system files
+# -----------------------------------------------------------------------------
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.DocumentRevisions-V100
+.TemporaryItems
+# Windows
 Thumbs.db
+ehthumbs.db
 desktop.ini
+$RECYCLE.BIN/
+*.lnk
+# Linux / network filesystems
+.directory
+.Trash-*
+.nfs*
 
+# -----------------------------------------------------------------------------
 # Logs and temporary files
+# -----------------------------------------------------------------------------
+logs/*
 *.log
 # ...except the committed synthetic CI-runner test fixtures (0014 Story 01.0 Task 03).
 # huge.log is generated at test time in a temp directory and never lands here.
@@ -157,11 +286,20 @@ desktop.ini
 *.bak
 *.orig
 *.rej
+*.pid
 .tmp/
 tmp/
 temp/
 
+# -----------------------------------------------------------------------------
+# Claude Code local, machine-specific files (shared hooks/skills/agents stay tracked)
+# -----------------------------------------------------------------------------
+.claude/settings.local.json
+.claude/worktrees/
+
+# -----------------------------------------------------------------------------
 # Environment / local secrets
+# -----------------------------------------------------------------------------
 .env
 .env.*
 !.env.example
