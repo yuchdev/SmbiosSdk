@@ -73,7 +73,9 @@ carries them.
 
 1. Merge the source change to `master`, and note its full commit SHA: this is
    the **source commit**. It must contain `LICENSE` and be reachable from
-   `master`.
+   `master`, so merge with a merge commit (or rebase), never a squash, and do
+   not delete the branch before the merge: a squash leaves the old commit
+   unreachable and `vcpkg_from_git` may stop resolving it.
 2. In a branch, edit `ports/smbios-c/portfile.cmake` (`REF` = the source
    commit) and `ports/smbios-c/vcpkg.json` (`"version"`; keep it equal to
    `SMBIOS_C_VERSION` in `smbios_c/CMakeLists.txt`, which
@@ -90,11 +92,17 @@ carries them.
        --overwrite-version        # only when re-releasing an unpublished version
    ```
 
-   It adds the entry to `versions/s-/smbios-c.json` (the `git-tree` of
+   It fails on a dirty working tree. It adds the entry to `versions/s-/smbios-c.json` (the `git-tree` of
    `ports/smbios-c`) and updates `versions/baseline.json`.
 5. Commit `versions/`. Open a PR. The commit that merges to `master` is the new
    registry **baseline** consumers pin.
 
 `scripts/ci/check_vcpkg_registry.py` (lint stage) fails when the `git-tree` in
-`versions/` does not match `ports/smbios-c`, so a port edit without step 3-5
+`versions/` does not match `ports/smbios-c`, when `REF` is not a full SHA, or when the
+portfile `URL` is not this repository, so a port edit without step 3-5
 cannot reach `master`.
+
+`HEAD_REF master` in the portfile only affects `vcpkg install --head`, which builds
+the unpinned tip of `master`; a normal install always builds the pinned `REF`.
+Never reuse a `REF` that is not reachable from `master`: GitHub can serve a
+commit that exists only in a fork when fetched by SHA from the parent URL.

@@ -75,7 +75,8 @@ def exported_symbols(library: Path) -> Optional[List[str]]:
 
 def check_symbols(symbols: Sequence[str]) -> None:
     """Every exported symbol is a ``smbios_*`` C function (and at least one exists)."""
-    stray = [s for s in symbols if not s.startswith("smbios_")]
+    # A GNU ld version script can list its version node (SMBIOS_C_<ver>) as a defined symbol.
+    stray = [s for s in symbols if not s.startswith(("smbios_", "SMBIOS_C_"))]
     if not symbols:
         raise SmokeError("symbols: the library exports nothing")
     if stray:

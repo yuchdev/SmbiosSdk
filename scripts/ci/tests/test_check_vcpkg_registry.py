@@ -31,13 +31,14 @@ def write(root: Path, rel: str, text: str) -> None:
 
 def make_tree(root: Path, *, version: str = "1.0.0", port_version: int = 0,
               baseline: str = "1.0.0", row_version: str = "1.0.0", tree: str = TREE,
-              ref: str = REF, baseline_pv: int = 0, row_pv: int = 0) -> None:
+              ref: str = REF, baseline_pv: int = 0, row_pv: int = 0,
+              url: str = "https://github.com/yuchdev/SmbiosSdk.git") -> None:
     port = {"name": "smbios-c", "version": version}
     if port_version:
         port["port-version"] = port_version
     write(root, "ports/smbios-c/vcpkg.json", json.dumps(port))
     write(root, "ports/smbios-c/portfile.cmake",
-          f"vcpkg_from_git(\n    OUT_SOURCE_PATH SOURCE_PATH\n    URL https://x/y.git\n"
+          f"vcpkg_from_git(\n    OUT_SOURCE_PATH SOURCE_PATH\n    URL {url}\n"
           f"    REF {ref}\n    HEAD_REF master\n)\n")
     write(root, "versions/baseline.json", json.dumps(
         {"default": {"smbios-c": {"baseline": baseline, "port-version": baseline_pv}}}))
@@ -94,9 +95,28 @@ class CheckTest(unittest.TestCase):
                 (msg,) = self.problems(ref=ref)
                 self.assertIn("REF is not a real 40-hex commit SHA", msg)
 
+    def test_ForeignPortfileUrlIsRejected(self) -> None:
+        for url in ("https://github.com/someone-else/SmbiosSdk.git",
+                    "https://github.com/yuchdev/SmbiosSdk"):
+            with self.subTest(url=url):
+                (msg,) = self.problems(url=url)
+                self.assertIn("URL is not https://github.com/yuchdev/SmbiosSdk.git", msg)
+
+    def test_WrongJsonTypesAreReportedNotRaised(self) -> None:
+        make_tree(self.root)
+        for rel, text in (("versions/baseline.json", '{"default": []}'),
+                          ("versions/baseline.json", "[]"),
+                          ("versions/s-/smbios-c.json", '{"versions": [1]}'),
+                          ("versions/s-/smbios-c.json", '{"versions": "x"}')):
+            with self.subTest(rel=rel, text=text):
+                write(self.root, rel, text)
+                self.assertTrue(reg.check(self.root, tree_of()))
+            make_tree(self.root)
+
     def test_MissingRegistryFilesAreReportedNotRaised(self) -> None:
         write(self.root, "ports/smbios-c/vcpkg.json", '{"name": "smbios-c", "version": "1.0.0"}')
-        write(self.root, "ports/smbios-c/portfile.cmake", f"REF {REF}\n")
+        write(self.root, "ports/smbios-c/portfile.cmake",
+              f"URL https://github.com/yuchdev/SmbiosSdk.git\nREF {REF}\n")
         msgs = reg.check(self.root, tree_of())
         self.assertEqual(len(msgs), 2)
         self.assertTrue(all("missing or unreadable" in m for m in msgs))

@@ -4,7 +4,7 @@
   "description": "C ABI shim over libsmbios for SMBIOS/DMI firmware table parsing",
   "homepage": "https://github.com/yuchdev/SmbiosSdk",
   "license": "MIT",
-  "supports": "windows | linux | osx",
+  "supports": "(windows & !uwp) | linux | osx",
   "dependencies": [
     "boost-date-time",
     "boost-iostreams",

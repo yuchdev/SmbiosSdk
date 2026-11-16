@@ -8,6 +8,11 @@
 # SHA512: the commit hash is the integrity check). It is bumped, together with
 # "version" in vcpkg.json and the registry's versions/ files, by the release
 # procedure in docs/dev/vcpkg-registry.md.
+# smbios_c is a SHARED library by construction (smbios_c/CMakeLists.txt): a
+# static triplet cannot request a static build of it, and vcpkg rejects DLLs
+# in a static-linkage tree on Windows.
+vcpkg_check_linkage(ONLY_DYNAMIC_LIBRARY)
+
 vcpkg_from_git(
     OUT_SOURCE_PATH SOURCE_PATH
     URL https://github.com/yuchdev/SmbiosSdk.git
@@ -27,6 +32,8 @@ vcpkg_cmake_configure(
 )
 
 vcpkg_cmake_install()
+# Windows: keep the debug/release PDBs next to their DLLs (a no-op elsewhere).
+vcpkg_copy_pdbs()
 
 # Ship the C ABI only. The root install also carries the libsmbios C++ static
 # libraries, headers and CMake package (Story 01.0), which smbios_c already

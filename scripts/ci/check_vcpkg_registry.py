@@ -12,7 +12,9 @@ every consumer who pins the registry baseline, so the lint stage checks:
    ``port-version``, and its ``git-tree`` equals the git tree hash of
    ``ports/smbios-c`` at ``HEAD`` (what ``vcpkg x-add-version`` records; it reads
    git, not the working tree, so the port must be committed);
-4. the portfile's ``REF`` is a full, non-zero commit SHA.
+4. the portfile's ``REF`` is a full, non-zero commit SHA and its ``URL`` is this repository
+   (a SHA-addressed fetch from the parent URL can also resolve a commit that exists only in a
+   fork).
 
 Reports through ``ci_step`` (policy P11), one RC1 line. Exit 0 ok, 1 inconsistent,
 2 usage/environment. Standard library only.
@@ -47,6 +49,10 @@ BASELINE_FILE: Final = "versions/baseline.json"
 _VERSION: Final = re.compile(r"^\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[0-9A-Za-z.]{1,40})?$")
 _SHA1: Final = re.compile(r"^[0-9a-f]{40}$")
 _REF: Final = re.compile(r"^\s*REF\s+([0-9A-Za-z]+)\s*$", re.MULTILINE)
+_URL: Final = re.compile(r"^\s*URL\s+(\S+)\s*$", re.MULTILINE)
+#: The only source repository the port may fetch (a SHA-addressed fetch from the parent URL
+#: can also return a commit that exists only in a fork, so the URL is pinned too).
+PORT_URL: Final = "https://github.com/yuchdev/SmbiosSdk.git"
 _MAX_LINES: Final = 10
 
 GitTree = Callable[[Path, str], Optional[str]]
@@ -97,13 +103,17 @@ def check(repo_root: Path, tree_of: GitTree = git_tree) -> List[str]:
     except OSError:
         problems.append(f"{PORT_DIR}/portfile.cmake: missing or unreadable")
     else:
+        url = _URL.search(portfile)
+        if url is None or url.group(1) != PORT_URL:
+            problems.append(f"{PORT_DIR}/portfile.cmake: URL is not {PORT_URL}")
         match = _REF.search(portfile)
         ref = match.group(1) if match else ""
         if not _SHA1.match(ref) or set(ref) == {"0"}:
             problems.append(f"{PORT_DIR}/portfile.cmake: REF is not a real 40-hex commit SHA")
 
     baseline = _load(repo_root / BASELINE_FILE, problems)
-    entry = (baseline or {}).get("default", {}).get(PORT) if isinstance(baseline, dict) else None
+    default = baseline.get("default") if isinstance(baseline, dict) else None
+    entry = default.get(PORT) if isinstance(default, dict) else None
     if baseline is not None and not isinstance(entry, dict):
         problems.append(f"{BASELINE_FILE}: no default entry for {PORT}")
     elif isinstance(entry, dict) and version is not None:

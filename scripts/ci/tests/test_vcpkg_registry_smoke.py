@@ -51,6 +51,9 @@ class SymbolTest(unittest.TestCase):
     def test_OnlySmbiosSymbolsPass(self) -> None:
         smoke.check_symbols(["smbios_open", "smbios_close"])
 
+    def test_LinkerVersionNodeIsNotAStraySymbol(self) -> None:
+        smoke.check_symbols(["smbios_open", "SMBIOS_C_1.0"])
+
     def test_StraySymbolFails(self) -> None:
         with self.assertRaises(consumer_smoke.SmokeError) as cm:
             smoke.check_symbols(["smbios_open", "_ZN6smbios4SMBiosC1Ev"])
