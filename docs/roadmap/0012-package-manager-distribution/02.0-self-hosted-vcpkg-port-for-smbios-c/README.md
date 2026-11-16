@@ -1,7 +1,7 @@
 # Story 02.0 - Self-Hosted vcpkg Overlay/Registry Port for `smbios_c`
 
 **Parent milestone:** [plan.md](../plan.md)
-**Status:** ⬜ Not started
+**Status:** 🔶 In progress (3/3 tasks; story-close gates pending)
 **Depends on:** none (technical) - see Note below
 
 ## Scope

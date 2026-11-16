@@ -27,3 +27,20 @@ Two items carry over from the review and stay in this task:
 
 - [ ] Publishing a scratch release produces a registry PR with a consistent `git-tree`, which passes `vcpkg x-add-version --verbose` without edits.
 - [ ] No manual step remains in the "bump baseline" procedure doc. That doc becomes a description of the automation.
+
+## Carried forward from Story 02.0 (2026-11-16, named items, not optional)
+
+Story 02.0 delivered the port, `versions/`, `check_vcpkg_registry.py` and a clean-room
+driver, but deliberately not these; this task or Task 04 owns them:
+
+- **Wire `scripts/ci/vcpkg_registry_smoke.py`** as a `verify`-stage step on Linux, macOS and
+  Windows (it was verified on macOS only; a cold Boost build exceeds the build job's 8-minute
+  test-step budget, so it belongs in `stage-verify.yml` with its own budget).
+- **Windows** (`x64-windows`, the static triplet question M4): the `.dll` symbol check is
+  skipped today (`symbols=skipped`); use `dumpbin /exports` or `llvm-nm`.
+- **`REF` reachability lint**: fail when the portfile `REF` is not an ancestor of `master`
+  (needs full history in the lint checkout), since a squash merge orphans it.
+- **`git-tree` overwrite lint**: fail when a `(version, port-version)` already on `master`
+  changes its `git-tree` (guards `x-add-version --overwrite-version`).
+- **Installed-file allowlist**: assert the exact file set under `vcpkg_installed/<triplet>`
+  so a new root install rule cannot ship silently (the portfile prunes a fixed list).
