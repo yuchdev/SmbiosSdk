@@ -57,7 +57,13 @@ with open(os.environ['STUB_CALLS'], 'a') as fh:
 dest = args[1] if args[:1] == ['-C'] else '.'
 sub = args[2] if args[:1] == ['-C'] else args[0]
 if sub == 'fetch':
-    sys.exit(int(os.environ.get('STUB_FETCH_RC', '0')))
+    calls = [line for line in open(os.environ['STUB_CALLS'])
+             if ' fetch -q ' in line]
+    rcs = os.environ.get('STUB_FETCH_RCS')
+    if rcs is None:
+        rcs = os.environ.get('STUB_FETCH_RC', '0')
+    responses = rcs.split(',')
+    sys.exit(int(responses[min(len(calls) - 1, len(responses) - 1)]))
 if sub == 'checkout':
     os.makedirs(os.path.join(dest, 'scripts'), exist_ok=True)
     sha = os.environ['STUB_TOOL_SHA']
@@ -286,7 +292,15 @@ class BootstrapRunTests(unittest.TestCase):
     def test_FetchFailurePrintsRc1(self) -> None:
         rc, lines, _ = self._run(STUB_FETCH_RC="128")
         self.assertEqual(rc, 1, lines)
-        self.assertTrue(lines[0].startswith("error: vcpkg git fetch failed (exit 128"), lines)
+        self.assertTrue(any(line.startswith("error: vcpkg git fetch failed (exit 128")
+                            for line in lines), lines)
+
+    def test_FetchRetriesOnceAfterTransientFailure(self) -> None:
+        with mock.patch.object(bootstrap_vcpkg, "FETCH_RETRY_DELAY_S", 0):
+            rc, lines, _ = self._run(STUB_FETCH_RCS="128,0")
+        self.assertEqual(rc, 0, lines)
+        self.assertEqual(sum(" fetch -q " in line for line in self.calls.read_text().splitlines()),
+                         2)
 
 
 if __name__ == "__main__":
