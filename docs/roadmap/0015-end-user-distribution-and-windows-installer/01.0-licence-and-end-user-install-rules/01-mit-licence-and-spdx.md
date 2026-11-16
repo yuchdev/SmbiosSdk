@@ -15,7 +15,7 @@ Add the MIT `LICENSE` the repository has never had, so every channel in [ADR 000
 ## Constraints
 - The licence covers **this repository's own code only**. Add no notice, attribution or licence text implying the `c-versions/` GPL upstreams are distributed; they are git-ignored, never compiled, never linked, never `#include`d, and milestone 0008's build-isolation guard must still pass unchanged.
 - Do not add per-file SPDX headers to source files in this task. That is a separate, mechanical, whole-tree change and bundling it here would bury the licence decision in a thousand-line diff.
-- `${CMAKE_INSTALL_DOCDIR}` resolves using `PROJECT_NAME`, which is `smbios_utility`. Set `CMAKE_INSTALL_DOCDIR` explicitly to `${CMAKE_INSTALL_DATAROOTDIR}/doc/libbios` so the installed path matches contract C1 and the `libbios` name every package uses, rather than leaking the internal project name into every package's file list.
+- `${CMAKE_INSTALL_DOCDIR}` resolves using `PROJECT_NAME`, which is `smbios_sdk`. Set `CMAKE_INSTALL_DOCDIR` explicitly to `${CMAKE_INSTALL_DATAROOTDIR}/doc/libbios` so the installed path matches contract C1 and the `libbios` name every package uses, rather than leaking the internal project name into every package's file list.
 
 ## Success criteria
 - [ ] `LICENSE` exists at the repository root and contains unmodified MIT text with a correct copyright line.

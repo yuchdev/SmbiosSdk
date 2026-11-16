@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.13) # target_link_options requires 3.13+
-project(smbios_utility CXX)
+project(smbios_sdk CXX)
 
 enable_testing()
 

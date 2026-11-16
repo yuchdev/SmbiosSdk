@@ -66,7 +66,7 @@ class InterimAuthorityTests(_Tree):
     """Today's state: no root VERSION, SMBIOS_C_VERSION stands in (plan SC3 prerequisite)."""
 
     def test_SingleSitePassesTrivially(self) -> None:
-        self.files("project(smbios_utility CXX)\n", 'set(SMBIOS_C_VERSION "1.0.0")\n')
+        self.files("project(smbios_sdk CXX)\n", 'set(SMBIOS_C_VERSION "1.0.0")\n')
         rc, lines = self.run_check()
         self.assertEqual(rc, 0, lines)
         self.assertRegex(lines[0], r"^ok: versions: 1\.0\.0 \(SMBIOS_C_VERSION, interim\), "
@@ -117,14 +117,14 @@ class RootAuthorityTests(_Tree):
     """After milestone 0012: the root project() VERSION is authoritative (ADR 0005 D5)."""
 
     def test_DerivedSiteReferencingProjectVersionPasses(self) -> None:
-        self.files("project(smbios_utility VERSION 2.1.0 LANGUAGES CXX)\n",
+        self.files("project(smbios_sdk VERSION 2.1.0 LANGUAGES CXX)\n",
                    "set(SMBIOS_C_VERSION ${PROJECT_VERSION})\n")
         rc, lines = self.run_check()
         self.assertEqual(rc, 0, lines)
         self.assertIn("2.1.0 (root project() VERSION), 1 sites", lines[0])
 
     def test_HandEditedLiteralInADerivedSiteFails(self) -> None:
-        self.files("project(smbios_utility VERSION 2.1.0)\n", 'set(SMBIOS_C_VERSION "2.1.0")\n')
+        self.files("project(smbios_sdk VERSION 2.1.0)\n", 'set(SMBIOS_C_VERSION "2.1.0")\n')
         rc, lines = self.run_check()
         self.assertEqual(rc, 1)
         self.assertIn("SMBIOS_C_VERSION: expected ${PROJECT_VERSION} -> actual 2.1.0", lines[0])
