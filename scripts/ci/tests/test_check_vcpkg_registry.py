@@ -106,6 +106,9 @@ class CheckTest(unittest.TestCase):
         make_tree(self.root)
         for rel, text in (("versions/baseline.json", '{"default": []}'),
                           ("versions/baseline.json", "[]"),
+                          ("ports/smbios-c/vcpkg.json", "null"),
+                          ("versions/baseline.json", "null"),
+                          ("versions/s-/smbios-c.json", "null"),
                           ("versions/s-/smbios-c.json", '{"versions": [1]}'),
                           ("versions/s-/smbios-c.json", '{"versions": "x"}')):
             with self.subTest(rel=rel, text=text):

@@ -72,11 +72,16 @@ def git_tree(repo_root: Path, path: str) -> Optional[str]:
 
 def _load(path: Path, problems: List[str]) -> Optional[Any]:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(path.read_text(encoding="utf-8"))
     except OSError:
         problems.append(f"{path.name}: missing or unreadable")
     except ValueError:
         problems.append(f"{path.name}: not valid JSON")
+    else:
+        if not isinstance(value, dict):
+            problems.append(f"{path.name}: root is not a JSON object")
+            return None
+        return value
     return None
 
 

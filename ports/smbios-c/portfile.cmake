@@ -29,6 +29,10 @@ vcpkg_cmake_configure(
         # CMakeLists.txt's build-versioning side effect; OFF by default, made
         # explicit so a future default change cannot reach a port build).
         -DGIT_TAG=OFF
+    OPTIONS_RELEASE
+        -DBUILD_SHARED_LIBS=OFF
+    OPTIONS_DEBUG
+        -DBUILD_SHARED_LIBS=OFF
 )
 
 vcpkg_cmake_install()
