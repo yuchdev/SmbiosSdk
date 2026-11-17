@@ -441,11 +441,20 @@ off, not worked around.
    licence audit ever happens (Wave 3).
 2. **Code-signing budget (DD5).** An Authenticode certificate and an
    Apple Developer ID gate the unsigned-binary warnings, the macOS
-   `.pkg`/`.dmg` row and the Homebrew cask row. Without them, Wave 1 ships
-   with SmartScreen warnings and macOS stays source-built.
-3. **Registry hosting for the Homebrew tap and the apt repo.** Milestone
-   0012's H2 (vcpkg registry hosting) is the same question; a single
-   answer should cover all three.
+   `.pkg`/`.dmg` row and the Homebrew cask row.
+   **Largely answered 2026-11-16 by [ADR 0007](0007-ci-compute-architecture-coverage-and-self-hosted-surface.md)
+   D8:** the SignPath Foundation's free OSS programme covers Windows
+   signing at no cost, and its criteria are what this project's own
+   pipeline already produces - so the "Wave 1 ships with SmartScreen
+   warnings" consequence above is likely pessimistic. macOS is unchanged
+   and needs nothing in Wave 1, because D2's Wave 1 macOS row is a
+   source-built Homebrew tap.
+3. ~~**Registry hosting for the Homebrew tap and the apt repo.**~~
+   **Resolved 2026-11-16 by [ADR 0007](0007-ci-compute-architecture-coverage-and-self-hosted-surface.md)
+   D6:** nothing is self-hosted. OBS, Fedora COPR and Launchpad each
+   *build and publish* their repository, and Cloudsmith's open-source
+   plan hosts apt/yum/nuget repositories for public OSI-licensed
+   projects. This also closes milestone 0012's H2.
 4. **Shipped build configuration.** Milestone 0012's status note already
    flags that the packaged configuration must be named (0014 C06 tests
    `-C Debug` today). An MSI shipping Debug binaries with a debug CRT

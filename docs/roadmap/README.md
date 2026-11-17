@@ -56,7 +56,7 @@ absolute-from-repo-root Markdown link:
 This roadmap takes `libbios` from a two-structure, Windows/pre-UEFI-Linux
 prototype to a portable, UEFI-capable C++20 library with a modern,
 dependency-managed build, a C ABI alongside its C++ one, tracked upstream
-references, and machine-parsable output. The fifteen milestones below are
+references, and machine-parsable output. The sixteen milestones below are
 intentionally sequential - each is the foundation the next one is built
 on. Milestones 0011-0013 extend that scope beyond the core C++ library
 itself - a GUI built on top of it, package-manager distribution of it, and
@@ -144,6 +144,17 @@ managers end users actually install from:
     ADR 0005 D9 destination plug-ins, so it adds no workflow file.
     0012 keeps the *developer* axis (vcpkg, `pkg-config`); this milestone
     owns the *end-user* axis.
+16. **0016** collects **real** firmware tables as scrubbed test fixtures,
+    per [ADR 0007](/docs/adr/0007-ci-compute-architecture-coverage-and-self-hosted-surface.md)
+    D8. Today the parser is only ever fed tables this project wrote
+    itself (`SyntheticTableBuilder`); a corpus of donated vendor dumps -
+    scrubbed of serials, UUIDs and asset tags, replayed through the same
+    `SmbiosTableWalkTestAccess` seam - converts an unbounded
+    hardware-acquisition problem into bounded data that runs free on
+    every runner and every architecture, including the big-endian
+    `linux-s390x` leg that finally executes milestone 0003's
+    endian-safety claim. Its first story is a safety gate: the scrubbing
+    tool lands before anyone is asked for a dump.
 
 ## Milestones
 
@@ -164,5 +175,6 @@ managers end users actually install from:
 | 0013 | Language bindings (Rust `smbios-sys`/`smbios`, Python `smbios`) over `smbios_c` | [plan.md](./0013-language-bindings/plan.md)          | [status.md](./0013-language-bindings/status.md)                          |
 | 0014 | CI rework from scratch (report contract, step runner, pinned runners, bounded summaries) | [plan.md](./0014-ci-rework-from-scratch/plan.md) | [status.md](./0014-ci-rework-from-scratch/status.md) |
 | 0015 | End-user distribution and the Windows installer (MIT licence, CLI/GUI install rules, WiX MSI, Chocolatey/WinGet/Homebrew/AUR) | [plan.md](./0015-end-user-distribution-and-windows-installer/plan.md) | [status.md](./0015-end-user-distribution-and-windows-installer/status.md) |
+| 0016 | Real-firmware table corpus (scrubber, fixture replay, big-endian proof) | [plan.md](./0016-firmware-table-corpus/plan.md) | [status.md](./0016-firmware-table-corpus/status.md) |
 
 **Legend (status.md files):** ✅ Complete · 🔶 In progress / partial · ⬜ Not started

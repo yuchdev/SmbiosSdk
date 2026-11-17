@@ -71,3 +71,15 @@ work in this milestone rather than in the ADR:
   the artifact most exposed to SmartScreen; a CLI-only first MSI is a
   defensible alternative reading of ADR 0006 D3. Story 02.0's feature
   tree assumes the GUI is included.
+- 2026-11-16 **Amended by [ADR 0007](/docs/adr/0007-ci-compute-architecture-coverage-and-self-hosted-surface.md)
+  D5 (architecture coverage).** Windows is now two architectures, so
+  **Story 02.0 produces two MSIs** (x64 and arm64, same `UpgradeCode`
+  family) and **Story 03.0's Chocolatey install script becomes
+  arch-aware**, carrying both checksums from `manifest.json`; the WinGet
+  manifest gains a second installer entry keyed by `Architecture` rather
+  than becoming a second manifest. This is an amendment, not a rewrite -
+  contract C2's feature tree and upgrade-identity rules are unchanged per
+  MSI. ADR 0007 open question 5 asks whether arm64 ships in Wave 1 or
+  waits; answer it before Story 02.0 starts. ADR 0007 D6 and D8 also
+  close two of this milestone's inherited open questions (registry
+  hosting, and Windows code-signing budget).
