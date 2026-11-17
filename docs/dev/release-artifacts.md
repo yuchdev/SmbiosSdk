@@ -152,6 +152,7 @@ in a WinGet manifest traces back to the same single value.
       "config": "Release",
       "sha256": "4c73cb7b…",
       "install_sha256": "0ad18bff…",
+      "arch": "x64",
       "glibc": "2.38"
     }
   ]
@@ -164,6 +165,7 @@ in a WinGet manifest traces back to the same single value.
 | `config` | the CMake build configuration shipped (always `Release`) |
 | `sha256` | digest of the archive - the value the `.sha256` file repeats |
 | `install_sha256` | digest of the **installed tree before archiving** |
+| `arch` | CPU architecture of the shipped binary (`x64`, `arm64`; `+`-joined for a universal Mach-O). It is read from the binary, and the `package` stage refuses an archive whose binary does not match its leg name. Manifests from before this field existed (run `44074901424`) do not have it. |
 | `glibc` / `msvc` / `macos_min` | the platform floor, read from the built binary itself |
 
 `install_sha256` is the integrity link between stages: the `package`
@@ -171,6 +173,61 @@ stage refuses to archive a tree whose digest differs from the one the
 build stage recorded after running the tests. It is what makes "the bytes
 we shipped are the bytes we tested" checkable rather than assumed, and it
 is verified on every leg of every run.
+
+## Using an extracted archive
+
+Extract the archive anywhere. Nothing in it needs to be installed into a
+system prefix.
+
+**C ABI (`smbios_c`) through `pkg-config`.**
+
+```bash
+PKG_CONFIG_PATH=<dir>/lib/pkgconfig pkg-config --cflags --libs smbios_c
+```
+
+`smbios_c.pc` is relocatable: its `prefix` is `${pcfiledir}/../..`, the
+directory two levels above the `.pc` file. The flags therefore point into
+wherever you extracted the archive, and into the real prefix of a system
+install. At run time the program must also find the shared library:
+`-Wl,-rpath,<dir>/lib` on Linux and macOS, or `<dir>/bin` on `PATH` on
+Windows.
+
+Archives of `1.0.0` produced before this change (CI run `44074901424`)
+still record the build machine's prefix: `/usr/local`, or
+`C:/Program Files (x86)/smbios_sdk` on Windows. For those, add
+`--define-prefix` (pkg-config 0.29+ and pkgconf).
+
+**C++ (`libsmbios`) through CMake.**
+
+```bash
+cmake -S . -B build -DCMAKE_PREFIX_PATH="<dir>;<boost prefix>"
+```
+
+Then use `find_package(libsmbios CONFIG REQUIRED)` and
+`target_link_libraries(app PRIVATE libsmbios::libsmbios)`. Do not add a
+whole-archive flag; the exported target already carries it. **You must
+supply Boost.Iostreams yourself.** The package config calls
+`find_dependency(Boost COMPONENTS iostreams)`, and the archive does not
+contain Boost.
+
+**Checking all of this in one command.** `scripts/ci/verify_release_artifact.py`
+runs the steps above in a clean room against one archive:
+
+- the sha256 against the `.sha256` file and `manifest.json`;
+- extraction, the layout, and the `install_sha256` of the extracted tree;
+- `pkg-config` plus a compiled C program;
+- a `find_package(libsmbios)` C++ program.
+
+It refuses to run if any path into the source checkout or a vcpkg root
+leaks into the environment or the build:
+
+```bash
+python3 scripts/ci/verify_release_artifact.py dist/libbios-1.0.0-linux-x64.tar.gz
+python3 scripts/ci/verify_release_artifact.py --dist dist --layout-only   # any host
+```
+
+The compile and run checks need a host of the archive's own platform and
+architecture. `--layout-only` runs the rest on any host.
 
 ## Supported baselines
 

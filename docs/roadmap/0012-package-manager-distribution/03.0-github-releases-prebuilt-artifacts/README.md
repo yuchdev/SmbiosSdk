@@ -1,7 +1,8 @@
 # Story 03.0 - GitHub Releases Prebuilt Artifacts (Windows/Linux/macOS)
 
 **Parent milestone:** [plan.md](../plan.md)
-**Status:** 🔶 In progress (Task 01 complete)
+**Status:** 🔶 In progress (Tasks 01-02 complete; Task 03 partial - success criterion 1 on all
+three OSes completes with Story 04.0 Task 02's `verify` stage)
 **Depends on:** Story 01.0 (`libsmbios` must be `install()`-able for the
 tarball to be complete - see `plan.md`'s Dependency graph note); milestone
 0014 Stories 01.0-03.0 (pipeline foundation, [ADR 0005](/docs/adr/0005-unified-build-package-publish-pipeline.md))
@@ -32,7 +33,7 @@ unwilling to add a vcpkg registry at all.
 |----|----------------------------------------------------------------------|----------------|--------|
 | 01 | [Package stage: archive the tested install tree](01-release-workflow-and-packaging.md) | ✅ Complete (validated on CI run 44074901424) | 02     |
 | 02 | [Artifact naming, checksums, and versioning](02-artifact-naming-checksums-and-versioning.md) | ✅ Complete | 03     |
-| 03 | [Tests](03-tests.md)                                                  | ⬜ Not started | -      |
+| 03 | [Tests](03-tests.md)                                                  | 🔶 Partial (verifier + 57 tests; H1 fixed, arch guard added; all five checks pass on macOS x64 with the literal `pkg-config` command, layout/digest/`pkg-config` on all three CI artifacts; SC1 awaits Story 04.0 Task 02) | -      |
 
 ## Key constraints
 
@@ -66,6 +67,11 @@ unwilling to add a vcpkg registry at all.
 - `.github/workflows/stage-package.yml` (reusable, one `stage.py package`
   step per packaging leg), called from the entry workflow on the tiers
   ADR 0005 D7 lists. **No `release.yml`** (superseded by ADR 0005 D8).
+- `scripts/ci/verify_release_artifact.py` (Task 03): clean-room
+  verification of one release archive (sidecar + manifest digests,
+  extraction, layout and `install_sha256`, `pkg-config` + C consumer,
+  `find_package(libsmbios)` consumer), callable by Story 04.0's `verify`
+  stage; tests in `scripts/ci/tests/test_verify_release_artifact.py`.
 - Documentation (exact location decided during implementation, e.g. a
   new `docs/dev/release-artifacts.md` or a section in
   `docs/cli-usage.md`) describing the artifact naming convention and how

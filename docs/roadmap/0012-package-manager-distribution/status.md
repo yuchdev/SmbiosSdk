@@ -8,7 +8,7 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
 |-------|------------------------------------------------------------------|----------------|-------|
 | 01.0  | `libsmbios` install rules and whole-archive-safe package export | ✅ Complete | - |
 | 02.0  | Self-hosted vcpkg overlay/registry port for `smbios_c`           | ✅ Complete | 25 script tests; registry smoke (macOS); CI full tier green |
-| 03.0  | GitHub Releases prebuilt artifacts - pipeline `package` stage (ADR 0005) | 🔶 In progress (Tasks 01-02 complete; Task 03 tests remain) | 49 script tests (`test_package_archive`); CI run 44074901424 green on all 18 jobs |
+| 03.0  | GitHub Releases prebuilt artifacts - pipeline `package` stage (ADR 0005) | 🔶 In progress (Tasks 01-02 complete; Task 03 partial: verifier delivered, H1 fixed, arch guard added; SC1 on all three OSes awaits Story 04.0 Task 02) | 55 + 57 script tests (`test_package_archive`, `test_verify_release_artifact`); CI run 44074901424 green on all 18 jobs; all five release checks pass on macOS x64 with the literal `pkg-config` command |
 | 04.0  | Release and publish automation - pipeline `verify`/`publish` stages (ADR 0005) | ⬜ Not started (unblocked: 0014 is complete) | - |
 
 **Legend:** ✅ Complete · 🔶 In progress / partial · ⬜ Not started
@@ -28,7 +28,7 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
 
   **New requirement:** Story 03.0 must name the shipped build configuration, because 0014 C06 tests `-C Debug` today.
 
-  **Still open for the maintainer:** licence (H3), `.pc` relocatability (H1), CLI in the tarball (I2), registry hosting (H2), Windows static triplet (M4).
+  **Still open for the maintainer:** licence (H3), `.pc` relocatability (H1, **resolved 2026-11-17**: `prefix=${pcfiledir}/../..`, see below), CLI in the tarball (I2), registry hosting (H2), Windows static triplet (M4).
 - 2026-11-15 The end-user distribution axis this milestone's Non-goals defer (Homebrew, apt, distro packaging of the `smbios` CLI - ADR 0004's Alternative 4) is now decided by [ADR 0006](/docs/adr/0006-end-user-distribution-and-windows-installer.md) (Proposed), which adds a Windows WiX MSI and a wave-ordered channel matrix. It changes nothing in this milestone's scope, but it **depends** on Story 01.0 (install rules + whole-archive-safe package export) and Story 04.0 Task 01 (the D5 version source), and it escalates open question **H3 (licence) from deferred to blocking** - no public registry row in its matrix can ship without a `LICENSE` file. It also records a prerequisite neither milestone covers: `smbios` (CLI) and `smbios_gui` have no `install()` rules at all, so the `package` stage cannot archive them.
 
 - **2026-11-15 Story 01.0 Task 02 (as built, macOS-verified).** `libsmbiosConfigVersion.cmake` uses `COMPATIBILITY SameMajorVersion` on `LIBSMBIOS_VERSION` (1.0.0, separate from `SMBIOS_C_VERSION`; both are rows in `scripts/ci/version_sites.json`): the C++ surface may grow within a major version, and no ABI/semver policy exists yet (plan Key constraints), so a major bump is the only boundary a consumer should be protected from. Revisit when a versioning policy is adopted. Measured: CMake does **not** rewrite a bare `$<TARGET_FILE:libsmbios>` on export, so the whole-archive link option is `$<INSTALL_INTERFACE:...$<TARGET_FILE:libsmbios::libsmbios>>` (installed form only; in-repo consumers keep their own whole-archive). macOS frameworks export as `-Wl,-framework,X` (a spaced `-framework X` is split into `-framework -lX`). The package config calls `find_dependency(Boost COMPONENTS iostreams)`. Windows (`/WHOLEARCHIVE:` on an imported target path) and Linux (`--whole-archive`) forms are unverified until Task 03's CI consumer gate.
@@ -68,7 +68,7 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
 
    - **Shipped build configuration: `Release`.** This settles the plan's own 2026-11-12 "New requirement" and fills the `config: null` / `pending` fields on the `linux-x64`, `windows-x64` and `macos-arm64` packaging legs in `scripts/ci/legs.json` (`stage.py` refuses a pending leg with exit 2 today). The packaged configuration therefore **differs by design** from the one 0014 C06 tests (`-C Debug`); Story 03.0 Task 01 must state that divergence explicitly. Rationale: a Debug artifact carries a debug-CRT dependency on Windows that is not redistributable and absent on users' machines - already flagged as a user-visible defect by [ADR 0006](/docs/adr/0006-end-user-distribution-and-windows-installer.md).
    - **Open question I2 resolved: the release tarball ships libraries only, for now.** Contents are `libsmbios` (static archives, headers, `libsmbiosConfig.cmake` - Story 01.0) plus `smbios_c` (shared library, header, `smbios_c.pc` - milestone 0007). The `smbios` CLI and `smbios_gui` are **excluded**, because neither has an `install()` rule anywhere in the tree and those rules belong to milestone 0015 Story 01.0 (not started). This keeps Story 03.0 within ADR 0004's developer-axis scope and unblocks it now; the CLI and GUI join the tarball when 0015 Story 01.0 lands. Story 03.0's artifact-contents task must assert the exclusion rather than leave it implicit.
-   - **Still open:** H1 (`.pc` relocatability) and M4 (Windows `x64-windows` static triplet, unverified).
+   - **Still open:** H1 (`.pc` relocatability; **resolved 2026-11-17**, see below) and M4 (Windows `x64-windows` static triplet, unverified).
 
 3. **CI live-table deviation is designed tolerance, not a swallowed failure.** On `macos-asan`, CI reports `smbios_integration_test: expected passed -> failed` and `67% tests passed, 1 tests failed out of 3`, yet the job is green - because the step emits `##[warning]a virtualized runner's firmware may not expose an SMBIOS table (exit 8)`. That is the intended Q4 behaviour (live-table suites fail cleanly without real firmware/privileges). Verified deliberately, because this story's close relies on "CI green" as evidence.
 - 2026-11-16 **Open question H2 (registry hosting) closed by
@@ -104,3 +104,40 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
 
   Both documented verification routes were executed against the real downloads before being written down (`shasum -a 256 -c` reported `libbios-1.0.0-macos-arm64.tar.gz: OK`; the `manifest.json` snippet reported all three legs `OK`), and the `.sha256` files use the standard `<hash>  <filename>` form that `sha256sum -c` and `shasum -a 256 -c` both accept unmodified. The doc also records the libraries-only rule with its rationale, including the nuance that `bin/` *does* exist on the Windows leg (it holds `smbios_c.dll`, per platform convention) while containing no executable - verified, no `.exe` in any leg.
 
+- **2026-11-17 Story 03.0 Task 03 (as built, partial).** The verifier is `scripts/ci/verify_release_artifact.py`, a stdlib library in the `consumer_smoke.py` shape. `run()` returns value-free lines and raises `VerifyError`; it prints nothing (P11). Its 52 tests are in `test_verify_release_artifact.py`. It re-runs ADR 0004's Validation/Rollout item against a **release archive**:
+
+  - the archive's sha256 is checked against both its `.sha256` sidecar and `manifest.json`, **first**, before anything is extracted;
+  - the archive is extracted safely and its layout checked, plus a check beyond the spec: **the extracted tree's digest equals the manifest's `install_sha256`**, so the bytes extracted are the bytes tested;
+  - `pkg-config` resolves `smbios_c` against the extracted `.pc` only, then `smbios_c_vcpkg_consumer/main.c` is compiled, linked and run from those flags;
+  - `libsmbios_consumer` is built through `find_package(libsmbios CONFIG)` against the extracted prefix. It has no whole-archive line, and the verifier asserts that it stays that way.
+
+  Both fixtures are reused unchanged. **The clean room is enforced.** Children get an allowlisted environment; `VCPKG_*`, `PKG_CONFIG_*`, `CMAKE_*`, `CPATH`, `LIBRARY_PATH`, `DYLD_*`/`LD_*`, `*FLAGS` and package hints are never passed. Then the run is *asserted*: it fails if a surviving environment value, the `pkg-config` output, a compile/link line, the CMake output, `CMakeCache.txt` or a generated build file mentions this repository or the vcpkg root. Each guard was fired for real on this host with `VCPKG_ROOT` set.
+
+  **Results** (host: macOS 12.7 **x86_64**; no Docker; no Linux, Windows or arm64 macOS host):
+
+  - All five checks pass on a locally packaged `libbios-1.0.0-macos-x64.tar.gz`: `smbios_open=ok structures=32` and `formatters=4 type17=Memory Device fields=15`, with Boost from MacPorts, not vcpkg.
+  - On the three CI artifacts of run 44074901424, digests, extraction, layout, `install_sha256` (78/78/81 files) and `pkg-config` resolution pass. Their compile/link/run checks were **not executed**: the macOS artifact is arm64-only with a 15.0 floor. A manual `-arch arm64` cross-link of the C check succeeded but cannot run here.
+
+  **Success criterion 1 is therefore not met yet.** It completes when Story 04.0 Task 02 calls `run()` from the `verify` stage on each leg's own runner. That stage was deliberately **not** defined here (`stage.py verify` still exits 2), and it must provide `pkg-config`/`pkgconf` and a non-vcpkg Boost.
+
+  **H1 evidence:** ADR 0004's literal `pkg-config --cflags --libs smbios_c` resolved **outside** the extracted archive on all three CI legs. The prefix was `/usr/local`, or `C:/Program Files (x86)/smbios_sdk` on Windows, which contains spaces and does not even split into flags. That evidence closed H1 (see the resolution note below). **Story 03.0 stays in progress** until criterion 1 is met.
+
+- **2026-11-17 H1 resolved, and an architecture guard added (maintainer rulings on Task 03's two findings).**
+
+  - **H1 (`.pc` relocatability) - resolved.** `smbios_c/smbios_c.pc.in` now says `prefix=${pcfiledir}/../..`. For both an extracted archive and a system install, the `.pc` sits in `<prefix>/lib/pkgconfig`, so the prefix resolves correctly in both cases, and the Windows spaces problem is gone. `configure_file(... @ONLY)` was already in use, so `${pcfiledir}` reaches the installed file verbatim. A comment there now marks `@ONLY` as load-bearing, and two script tests pin both the template line and `@ONLY`.
+
+    Evidence: an archive packaged after the change passes the verifier with `--require-relocatable-pc`. The literal `pkg-config --cflags --libs smbios_c`, with only `PKG_CONFIG_LIBDIR` set, prints `-I<x>/prefix/lib/pkgconfig/../../include -L<x>/prefix/lib/pkgconfig/../../lib -lsmbios_c`, which resolves to the extracted `prefix/include` and `prefix/lib`.
+
+    The verifier now expects the literal command. `--define-prefix` remains only as a reported fallback for archives packaged before the fix (all three of run 44074901424 still need it), and `--require-relocatable-pc` stays opt-in.
+
+    **vcpkg port unaffected:** `vcpkg_fixup_pkgconfig()` deletes every existing `prefix=` line and writes its own `prefix=${pcfiledir}/<relative>`, so the port's installed `.pc` is the same before and after. The pinned `REF` `0bfc9a0` also predates the change, and the lint `registry` step is green.
+
+  - **Architecture guard (`package_archive.py`).** `platform_meta(src, leg)` now reads the CPU architecture from the installed `smbios_c` binary, the same way it reads `glibc`/`macos_min`/`msvc`: ELF `e_machine`, every Mach-O slice's `cputype`, PE `Machine`. It **refuses** a binary that does not match the leg, naming both, e.g. `architecture mismatch: lib/libsmbios_c.dylib is built for x64, but the leg macos-arm64 is arm64`.
+
+    That is exactly what this host's `--leg macos-arm64` Release tree produced, and it is refused now. The reader also returns the right answer on the three real CI binaries (`x64`, `arm64`, `x64`) and rejects each under the wrong leg.
+
+    `manifest.json` gains a required per-leg `arch` field (`x64`/`arm64`, `+`-joined for a universal Mach-O). `update_manifest` and the manifest-merge job refuse a missing or mismatched `arch`. The verifier checks `arch` when present and tolerates its absence in older manifests. The `package` summary line now ends with the arch.
+
+    Tests: 6 new in `test_package_archive.py`, including the stage-level mismatch regression and a merge part without or with a wrong `arch`. 5 new in `test_verify_release_artifact.py`.
+
+  **Story 03.0 is still 🔶 In progress.** Criteria 2-5 of Task 03 are met. Criterion 1, the four checks on clean Windows, Linux and macOS machines, needs those hosts, and completes with Story 04.0 Task 02's `verify` stage. The next CI run will also be the first to produce archives with the relocatable `.pc` and the `arch` field.
