@@ -30,8 +30,8 @@ unwilling to add a vcpkg registry at all.
 
 | #  | Document                                                             | Status         | Blocks |
 |----|----------------------------------------------------------------------|----------------|--------|
-| 01 | [Package stage: archive the tested install tree](01-release-workflow-and-packaging.md) | ✅ Complete (CI wiring follow-up) | 02     |
-| 02 | [Artifact naming, checksums, and versioning](02-artifact-naming-checksums-and-versioning.md) | ⬜ Not started | 03     |
+| 01 | [Package stage: archive the tested install tree](01-release-workflow-and-packaging.md) | ✅ Complete (validated on CI run 44074901424) | 02     |
+| 02 | [Artifact naming, checksums, and versioning](02-artifact-naming-checksums-and-versioning.md) | ✅ Complete | 03     |
 | 03 | [Tests](03-tests.md)                                                  | ⬜ Not started | -      |
 
 ## Key constraints

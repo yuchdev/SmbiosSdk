@@ -1,7 +1,7 @@
 # 02 - Artifact naming, checksums, and versioning
 
 **Parent story:** [README.md](README.md)
-**Status:** ⬜ Not started
+**Status:** ✅ Complete (2026-11-17)
 **Depends on:** Task 01
 
 > **Amended 2026-11-12 by [ADR 0005](/docs/adr/0005-unified-build-package-publish-pipeline.md).**
@@ -76,8 +76,49 @@ N/A - documentation and CI metadata only.
 
 ## Success criteria
 
-- [ ] Every artifact from Task 01's workflow has a matching `.sha256`
-      file attached to the same release.
-- [ ] The naming/versioning documentation is written down and linked
-      from `docs/cli-usage.md` or an equivalent discoverable doc.
-- [ ] `python scripts/check_doc_links.py docs/` reports zero problems.
+- [x] Every artifact has a matching `.sha256` file. Verified on CI run
+      `44074901424`: three archives, three `.sha256` files and one
+      `manifest.json`. *Attaching* them to a GitHub Release is the
+      `publish` stage (Story 04.0 Task 02), not this task.
+- [x] The naming/versioning documentation is written down
+      ([docs/dev/release-artifacts.md](/docs/dev/release-artifacts.md))
+      and linked from a discoverable doc - the README's `## Documentation`
+      list. It is **not** linked from `docs/cli-usage.md`, deliberately:
+      these artifacts contain no CLI, so pointing CLI users at them would
+      mislead.
+- [x] `python3 scripts/check_doc_links.py docs/` reports zero problems.
+
+## As built (2026-11-17)
+
+Only the documentation deliverable remained; the amendment banner above
+withdrew the `shasum` YAML step (checksums come from Task 01's
+`package_archive.py`), fixed the name as `libbios-<version>-<leg>.<ext>`,
+and reversed the "versions may drift" statement.
+
+- **Written from verified artifacts, not from this spec.** Every figure
+  in the document comes from CI run `44074901424` on commit `6cf73e4`
+  and from the downloaded `dist` artifact - archive layouts per platform,
+  the manifest's field set, and the platform floors.
+- **M6 (state the arch/glibc baseline) is answered concretely:**
+  `linux-x64` requires **glibc 2.38**, `windows-x64` is x86_64 with
+  **MSVC toolset 14.44**, and `macos-arm64` is **arm64 only with a macOS
+  15.0 floor**. The macOS floor is called out as a real limitation: it
+  follows the pinned runner's SDK and is markedly newer than a local
+  build produces (12.7 on an older Xcode), so it narrows the audience
+  more than the artifact name suggests. ADR 0007 D2's `macos-x64`,
+  `linux-arm64` and `windows-arm64` legs are named as the gap.
+- **Both documented verification routes were executed against the real
+  downloads** before being written down: `shasum -a 256 -c` on the
+  detached file (`libbios-1.0.0-macos-arm64.tar.gz: OK`) and the
+  `manifest.json` snippet (all three legs `OK`). The `.sha256` files use
+  the standard `<hash>  <filename>` form, so `sha256sum -c` and
+  `shasum -a 256 -c` both accept them unmodified.
+- **The libraries-only rule is documented as a decision with its
+  rationale**, including the nuance that `bin/` *does* exist on the
+  Windows leg (it holds `smbios_c.dll`, per platform convention) while
+  containing no executable - checked, no `.exe` in any leg.
+- **Versioning is documented as a non-promise**: one authoritative value
+  checked by `check_versions.py` (ADR 0005 D5), currently the interim
+  `SMBIOS_C_VERSION` until Story 04.0 Task 01, with no semver guarantee
+  (ADR 0004 DD2) beyond `libsmbiosConfigVersion.cmake`'s
+  `SameMajorVersion` boundary.

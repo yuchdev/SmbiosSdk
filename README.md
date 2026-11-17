@@ -125,6 +125,7 @@ Four C++ suites: `smbios_unit_test` (hermetic, synthetic-table-based, always gre
 - **[Output formats](docs/output-formats.md)** - the `--format` values, their layouts and escaping.
 - **[Custom output formatter](docs/dev/custom-output-formatter.md)** - adding your own format via the formatter registry.
 - **[Examples](examples/README.md)** - standalone programs that consume `libsmbios`.
+- **[Release artifacts](docs/dev/release-artifacts.md)** - what a release contains, how to verify a download, and which glibc/macOS/MSVC baselines the binaries require.
 - **[Test subsystem](docs/test/test-subsystem.md)** - what's tested, how, and why each category matters.
 - **[Fuzzing](docs/dev/fuzzing.md)** - the local-only hardening harness for the table parser.
 - **[C++ coding standard](docs/dev/cpp_coding_standard.md)** - style, Doxygen, and ownership conventions for contributors.
