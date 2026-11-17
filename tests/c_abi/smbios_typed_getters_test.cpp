@@ -12,8 +12,8 @@
 #include <libsmbios/tables/system_information_entry.hpp>
 #include <libsmbios/tables/memory_device_entry.hpp>
 
-#include <cassert>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
@@ -49,18 +49,50 @@ typedef smbios_error_t (*smbios_typed_string_getter_fn)(smbios_entry_handle_t en
 
 namespace {
 
+/// @brief Reports a failed CHECK() and aborts. Never compiled out.
+void check_failed(const char* expr, int line)
+{
+    std::fprintf(stderr, "%s:%d: check failed: %s\n", __FILE__, line, expr);
+    std::abort();
+}
+
+} // namespace
+
+/// @brief An assertion that survives NDEBUG. Use this, never `assert()`.
+///
+/// The packaging legs build Release, which defines `NDEBUG` and turns
+/// `assert(x)` into `((void)0)`. That broke this file in two distinct ways,
+/// neither visible in a Debug-only CI:
+///
+/// - A call written *inside* an `assert()` is never executed at all. Both
+///   `smbios_entry_count()` and `smbios_entry_at()` were, so `count` stayed 0
+///   and `entry` stayed `nullptr`, and the mismatched-type checks below
+///   silently did not run.
+/// - An *unchecked* error leaves the out-parameter untouched. `fetch()` then
+///   built a string of length `needed - 1` with `needed == 0`, underflowing
+///   `size_t` and throwing `std::length_error`.
+///
+/// `tests/c_abi/smbios_entry_iteration_test.cpp` avoids the first problem by
+/// keeping every call outside its `assert()`; this macro covers both.
+#define CHECK(expr) ((expr) ? (void)0 : check_failed(#expr, __LINE__))
+
+namespace {
+
 /// @brief Calls a smbios_c getter with the "ask needed size, then fetch"
-/// two-call idiom and returns the resulting string. Asserts success.
+/// two-call idiom and returns the resulting string. Aborts unless both calls
+/// return what the C ABI contract promises.
 SMBIOS_TEST_NO_SANITIZE_FUNCTION
 std::string fetch(smbios_typed_string_getter_fn getter, smbios_entry_handle_t entry)
 {
     size_t needed = 0;
     smbios_error_t err = getter(entry, nullptr, 0, &needed);
-    assert(err == SMBIOS_ERR_BUFFER_TOO_SMALL);
+    CHECK(err == SMBIOS_ERR_BUFFER_TOO_SMALL);
+    CHECK(needed > 0); // the contract includes the NUL, so needed - 1 below cannot underflow
 
     std::vector<char> buf(needed);
     err = getter(entry, buf.data(), buf.size(), &needed);
-    assert(err == SMBIOS_OK);
+    CHECK(err == SMBIOS_OK);
+    CHECK(needed > 0);
     return std::string(buf.data(), needed - 1); // explicit length, not the C-string ctor - see smbios_entry_iteration_test.cpp's comment on embedded NULs
 }
 
@@ -81,7 +113,7 @@ int main()
     const uint8_t* table_end = reference_bios.get_table_base() + reference_bios.get_table_size();
 
     size_t count = 0;
-    assert(smbios_entry_count(handle, &count) == SMBIOS_OK);
+    CHECK(smbios_entry_count(handle, &count) == SMBIOS_OK);
 
     bool saw_bios_info = false;
     bool saw_system_info = false;
@@ -91,7 +123,8 @@ int main()
     size_t reference_index = 0;
     for (const smbios::DMIHeader& header : reference_bios) {
         smbios_entry_handle_t entry = nullptr;
-        assert(smbios_entry_at(handle, reference_index, &entry) == SMBIOS_OK);
+        CHECK(smbios_entry_at(handle, reference_index, &entry) == SMBIOS_OK);
+        CHECK(entry != nullptr);
         ++reference_index;
 
         std::unique_ptr<smbios::AbstractSMBiosEntry> concrete =
@@ -109,8 +142,8 @@ int main()
             // Mismatched-type checks: a BIOS Information entry is not a
             // System Information or Memory Device entry.
             size_t needed = 0;
-            assert(smbios_system_uuid(entry, nullptr, 0, &needed) == SMBIOS_ERR_INVALID_ARGUMENT);
-            assert(smbios_memory_device_size(entry, nullptr, 0, &needed) == SMBIOS_ERR_INVALID_ARGUMENT);
+            CHECK(smbios_system_uuid(entry, nullptr, 0, &needed) == SMBIOS_ERR_INVALID_ARGUMENT);
+            CHECK(smbios_memory_device_size(entry, nullptr, 0, &needed) == SMBIOS_ERR_INVALID_ARGUMENT);
             saw_mismatch_check = true;
         } else if (auto* system_info = dynamic_cast<smbios::SystemInformationEntry*>(concrete.get())) {
             saw_system_info = true;
@@ -121,7 +154,7 @@ int main()
             }
 
             size_t needed = 0;
-            assert(smbios_bios_vendor(entry, nullptr, 0, &needed) == SMBIOS_ERR_INVALID_ARGUMENT);
+            CHECK(smbios_bios_vendor(entry, nullptr, 0, &needed) == SMBIOS_ERR_INVALID_ARGUMENT);
         } else if (auto* memory_device = dynamic_cast<smbios::MemoryDeviceEntry*>(concrete.get())) {
             saw_memory_device = true;
             std::string size_str = fetch(smbios_memory_device_size, entry);
@@ -132,7 +165,7 @@ int main()
             }
 
             size_t needed = 0;
-            assert(smbios_bios_vendor(entry, nullptr, 0, &needed) == SMBIOS_ERR_INVALID_ARGUMENT);
+            CHECK(smbios_bios_vendor(entry, nullptr, 0, &needed) == SMBIOS_ERR_INVALID_ARGUMENT);
         }
     }
 
