@@ -76,12 +76,15 @@ def update_manifest(manifest: Path, leg: str, archive: Path, meta: Mapping[str, 
       `.sha256` files and one manifest from the tested trees, with no
       configure/build step in the stage. **Wired** (`ci.yml` `package` job;
       three per-leg jobs and a manifest job), proven locally and by the
-      merge test; **not yet observed on a real CI run**, and blocked there by
-      the Release-only test bug below until it is fixed.
+      merge test, and **observed on a real CI run**: run 44074901424 on
+      `6cf73e4` (push to `master`, full tier) was green across all 18 jobs,
+      including `build (linux-x64 | windows-x64 | macos-arm64)` and
+      `package (linux-x64 | windows-x64 | macos-arm64 | manifest)`. The
+      Release-only test bug that blocked it is fixed (`60f8eab`).
 - [x] Each archive contains `smbios_c`'s library/headers/`.pc` and
       `libsmbios`'s installed library/headers/package config, confirmed by
-      listing the archive contents (macOS, below); the stage itself refuses a
-      tree without them.
+      listing the archive contents (macOS locally, and all three legs from
+      the CI `dist` artifact); the stage itself refuses a tree without them.
 - [x] `stage.py package` runs locally against a local `install/<leg>/`
       with `CI_REPORTER=plain`.
 
