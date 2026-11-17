@@ -1,8 +1,8 @@
 // Exercises the 5 curated typed field accessors against the real
 // machine's SMBIOS table: each on its correct entry type (output must
 // match the equivalent C++ getter exactly), and each on a mismatched
-// entry type (must return SMBIOS_ERR_INVALID_ARGUMENT). Not wired into
-// CMake yet (Story 03.0's job); compiled and run manually.
+// entry type (must return SMBIOS_ERR_INVALID_ARGUMENT). Runs as part of the
+// unprivileged ctest set (C13) on the sanitizer legs.
 #include <smbios/smbios.h>
 
 #include <libsmbios/smbios.hpp>
@@ -18,11 +18,41 @@
 #include <string>
 #include <vector>
 
+/// @brief Pointer to one of smbios_c's curated typed string getters.
+///
+/// Declared inside an `extern "C"` block so the pointed-to function type
+/// carries the same C language linkage as the getters themselves (in C++,
+/// language linkage is part of a function's type).
+extern "C" {
+typedef smbios_error_t (*smbios_typed_string_getter_fn)(smbios_entry_handle_t entry,
+                                                        char* buf,
+                                                        size_t buf_len,
+                                                        size_t* out_needed_len);
+}
+
+/// @brief Suppresses UBSan's indirect-call type check inside fetch() below.
+///
+/// AppleClang 14 reports "call to function smbios_bios_vendor through pointer
+/// to incorrect function type" for the calls in fetch(), even though the
+/// header declaration, the definition in smbios_c.cpp and this typedef have
+/// identical parameter lists - a false positive from that Clang generation's
+/// prologue-hash implementation of -fsanitize=function, which cannot see a
+/// matching signature for a getter reached across smbios_c's shared-library
+/// boundary (hidden visibility plus an explicit linker export allowlist).
+/// AppleClang 17, which CI pins, does not diagnose it. Scoped to this one
+/// helper so every other UBSan check stays live in this translation unit.
+#if defined(__clang__)
+#  define SMBIOS_TEST_NO_SANITIZE_FUNCTION __attribute__((no_sanitize("function")))
+#else
+#  define SMBIOS_TEST_NO_SANITIZE_FUNCTION
+#endif
+
 namespace {
 
 /// @brief Calls a smbios_c getter with the "ask needed size, then fetch"
 /// two-call idiom and returns the resulting string. Asserts success.
-std::string fetch(smbios_error_t (*getter)(smbios_entry_handle_t, char*, size_t, size_t*), smbios_entry_handle_t entry)
+SMBIOS_TEST_NO_SANITIZE_FUNCTION
+std::string fetch(smbios_typed_string_getter_fn getter, smbios_entry_handle_t entry)
 {
     size_t needed = 0;
     smbios_error_t err = getter(entry, nullptr, 0, &needed);
