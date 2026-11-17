@@ -105,13 +105,10 @@ generate_export_header(${TARGET}
     EXPORT_FILE_NAME ${CMAKE_CURRENT_BINARY_DIR}/include/smbios_c/smbios_c_export.h
 )
 
-# smbios_c has its own version, independent of the main project's (the
-# root CMakeLists.txt's project() call declares none) - plan.md's own
-# framing is "a thin, separately-versioned C ABI shim", so its version
-# should not be silently tied to a project version that does not exist.
-# 1.0.0 marks this milestone's initial release of the C API; bump it
-# only for a deliberate, documented C-API-level change going forward.
-set(SMBIOS_C_VERSION "1.0.0")
+# Derived from the root project() VERSION, never hand-edited (ADR 0005 D5;
+# scripts/ci/check_versions.py fails on a literal here). It feeds the
+# generated smbios_c.pc's Version: field.
+set(SMBIOS_C_VERSION ${PROJECT_VERSION})
 
 # @ONLY is load-bearing: smbios_c.pc.in's relocatable prefix=${pcfiledir}/../..
 # must reach the installed file verbatim (without @ONLY CMake would expand

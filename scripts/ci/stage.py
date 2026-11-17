@@ -68,8 +68,8 @@ legs only; it never configures or builds; stops at the first failing step):
     ``smbios`` CLI/``smbios_gui`` (status.md 2026-11-16 ruling I2); then writes
     ``dist/libbios-<version>-<leg>.<ext>`` (reproducible ``.tar.gz``, ``.zip``
     on Windows), its ``.sha256`` and the leg's entry in ``dist/manifest.json``.
-    ``<version>`` is the D5 value read by ``check_versions.check`` (today the
-    interim ``SMBIOS_C_VERSION``); a version-site mismatch fails the step. The
+    ``<version>`` is the D5 value read by ``check_versions.check`` (the root
+    ``project()`` VERSION); a version-site mismatch fails the step. The
     job outputs ``version`` and ``archive_ext`` name the files for the
     workflow's literal-path upload (P15). ``manifest`` (``--only manifest``,
     the manifest job): merges the per-leg ``parts/dist-<leg>/`` into the one

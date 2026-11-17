@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.13) # target_link_options requires 3.13+
-project(smbios_sdk CXX)
+# The one authoritative release version (ADR 0005 D5). SMBIOS_C_VERSION and
+# LIBSMBIOS_VERSION derive from it via ${PROJECT_VERSION}, and the port's
+# vcpkg.json, the registry baseline and v* tags are checked against it by
+# scripts/ci/check_versions.py. Change it only with
+# scripts/release/prepare_release.py, which bumps every site at once.
+project(smbios_sdk VERSION 1.0.0 LANGUAGES CXX)
 
 enable_testing()
 

@@ -1,7 +1,7 @@
 # Story 04.0 - Release and Publish Automation
 
 **Parent milestone:** [plan.md](../plan.md)
-**Status:** ⬜ Not started
+**Status:** 🔶 In progress (Task 01 complete, 2026-11-17)
 **Depends on:** Stories 01.0, 02.0 and 03.0 (it automates their manual steps); milestone 0014 Stories 01.0-03.0 and Story 04.0 Task 02 (the pipeline foundation and the tier rows, per [ADR 0005](/docs/adr/0005-unified-build-package-publish-pipeline.md))
 
 ## Scope
@@ -21,7 +21,7 @@ Workflow conventions are not restated here. Pins, permissions, step shape, repor
 
 | #  | Document | Status | Blocks |
 |----|----------|--------|--------|
-| 01 | [Version sites and release preparation](01-version-source-and-release-prep.md) | ⬜ Not started | 02 |
+| 01 | [Version sites and release preparation](01-version-source-and-release-prep.md) | ✅ Complete (2026-11-17) | 02 |
 | 02 | [Publish stage: gated draft, upload, promote](02-release-pipeline-draft-upload-publish.md) | ⬜ Not started | 03 |
 | 03 | [Registry update in the publish stage](03-registry-update-automation.md) | ⬜ Not started | 04 |
 | 04 | [Verify stage and post-publish check](04-post-publish-verification.md) | ⬜ Not started | 05 |

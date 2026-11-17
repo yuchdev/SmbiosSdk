@@ -37,10 +37,14 @@ It is checked across every place it appears by
 `scripts/ci/check_versions.py`, so the archive name, the port manifest
 and the release tag cannot drift apart
 ([ADR 0005](/docs/adr/0005-unified-build-package-publish-pipeline.md)
-D5). Until milestone 0012 Story 04.0 Task 01 derives it from the root
-`CMakeLists.txt`'s `project(... VERSION ...)`, the interim source is
-`SMBIOS_C_VERSION` (currently `1.0.0`); `check_versions.py` reports which
-source it used on every run.
+D5). It is the root `CMakeLists.txt`'s `project(... VERSION X.Y.Z ...)`
+(currently `1.0.0`); `SMBIOS_C_VERSION` and `LIBSMBIOS_VERSION` derive from
+it through `${PROJECT_VERSION}`. Change it only with
+`python3 scripts/release/prepare_release.py X.Y.Z`, which sets it together
+with the port's `"version"` and the registry baseline and then runs the
+check. A pre-release (`v1.2.0-rc.1`) is a property of the **tag** only:
+`<version>` never carries the suffix, so the release candidate's and the
+final release's archives share file names but not digests.
 
 **A version is not a compatibility promise.** This project has not
 adopted semantic versioning for either `libsmbios` or `smbios_c`, and
@@ -192,8 +196,14 @@ install. At run time the program must also find the shared library:
 `-Wl,-rpath,<dir>/lib` on Linux and macOS, or `<dir>/bin` on `PATH` on
 Windows.
 
-Archives of `1.0.0` produced before this change (CI run `44074901424`)
-still record the build machine's prefix: `/usr/local`, or
+Confirmed on real artifacts: CI run `44112333813` (commit `57ca646`) is the
+first whose archives carry the relocatable prefix, on all three legs, and
+the clean-room verifier reports `pkg-config ok` for each - where the
+previous run reported `needs --define-prefix (non-relocatable .pc)`. That
+run is also the first to carry the per-leg `arch` field.
+
+Archives of `1.0.0` produced before that run (CI run `44074901424`) still
+record the build machine's prefix: `/usr/local`, or
 `C:/Program Files (x86)/smbios_sdk` on Windows. For those, add
 `--define-prefix` (pkg-config 0.29+ and pkgconf).
 

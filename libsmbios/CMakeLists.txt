@@ -90,9 +90,10 @@ else()
         "$<INSTALL_INTERFACE:LINKER:--whole-archive,$<TARGET_FILE:libsmbios::libsmbios>,--no-whole-archive>")
 endif()
 
-# Independent of SMBIOS_C_VERSION (no shared version policy yet); both are
-# checked by scripts/ci/check_versions.py via scripts/ci/version_sites.json.
-set(LIBSMBIOS_VERSION "1.0.0")
+# Derived from the root project() VERSION, never hand-edited (ADR 0005 D5;
+# scripts/ci/check_versions.py fails on a literal here). It feeds
+# libsmbiosConfigVersion.cmake's SameMajorVersion check.
+set(LIBSMBIOS_VERSION ${PROJECT_VERSION})
 
 include(CMakePackageConfigHelpers)
 write_basic_package_version_file(

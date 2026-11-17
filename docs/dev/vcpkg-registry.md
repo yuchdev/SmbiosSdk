@@ -78,9 +78,17 @@ carries them.
    unreachable and `vcpkg_from_git` may stop resolving it.
 2. In a branch, edit `ports/smbios-c/portfile.cmake` (`REF` = the source
    commit) and `ports/smbios-c/vcpkg.json` (`"version"`; keep it equal to
-   `SMBIOS_C_VERSION` in `smbios_c/CMakeLists.txt`, which
+   the root `CMakeLists.txt` `project()` VERSION, which
    `scripts/ci/check_versions.py` enforces). For a port-only fix at the same
    version, bump `"port-version"` instead.
+
+   `python3 scripts/release/prepare_release.py X.Y.Z` sets the root VERSION,
+   this `"version"` and `versions/baseline.json` in one step and runs the check;
+   it never commits, tags, or touches `versions/s-/smbios-c.json`. Because
+   `check_versions.py` requires all three to agree in every commit, the bump
+   travels with the source commit of step 1, and the lint `registry` step
+   reports `newest version differs from the port version` until step 4 adds the
+   entry. Story 04.0 Task 03 automates this sequence.
 3. **Commit that.** `vcpkg x-add-version` reads the port from git, not from the
    working tree.
 4. From the repository root run:
