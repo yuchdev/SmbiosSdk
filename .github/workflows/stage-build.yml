@@ -24,7 +24,11 @@
 # install_artifact_<leg> (the upload's artifact ID) let the package stage
 # download by ID and prove the tree is the tested one (threat model CR-8).
 # Each output name is unique per leg, so the matrix's combined outputs never
-# overwrite each other.
+# overwrite each other. binary_cache_<leg> (milestone 0012 Story 04.0 Task 02,
+# threat model 2026-11-18 RP-4) is `none` only when the leg built every vcpkg
+# dependency from source (VCPKG_BINARY_SOURCES exactly `clear` and 0 restored
+# packages in the configure log), else `restored`; it reaches the package
+# stage's manifest and the publish stage's cold-build check (CR-2).
 #
 # Steps run twice, once per interpreter name: the run: line must be a
 # literal (P6/P7), and the Windows image has `python` but no `python3`.
@@ -62,6 +66,15 @@ on:
       install_artifact_macos_arm64:
         description: Artifact ID of install-macos-arm64
         value: ${{ jobs.build.outputs.install_artifact_macos_arm64 }}
+      binary_cache_linux_x64:
+        description: Binary-cache state of linux-x64, none or restored (single-line JSON string)
+        value: ${{ jobs.build.outputs.binary_cache_linux_x64 }}
+      binary_cache_windows_x64:
+        description: Binary-cache state of windows-x64, none or restored (single-line JSON string)
+        value: ${{ jobs.build.outputs.binary_cache_windows_x64 }}
+      binary_cache_macos_arm64:
+        description: Binary-cache state of macos-arm64, none or restored (single-line JSON string)
+        value: ${{ jobs.build.outputs.binary_cache_macos_arm64 }}
 
 permissions:
   contents: read
@@ -97,6 +110,9 @@ jobs:
       install_artifact_linux_x64: ${{ matrix.leg == 'linux-x64' && steps.upload-install.outputs.artifact-id || '' }}
       install_artifact_windows_x64: ${{ matrix.leg == 'windows-x64' && steps.upload-install.outputs.artifact-id || '' }}
       install_artifact_macos_arm64: ${{ matrix.leg == 'macos-arm64' && steps.upload-install.outputs.artifact-id || '' }}
+      binary_cache_linux_x64: ${{ steps.compile.outputs.binary_cache_linux_x64 }}
+      binary_cache_windows_x64: ${{ steps.compile-win.outputs.binary_cache_windows_x64 }}
+      binary_cache_macos_arm64: ${{ steps.compile.outputs.binary_cache_macos_arm64 }}
     env:
       CI_JOB: build
       CI_LEG: ${{ matrix.leg }}
@@ -142,7 +158,8 @@ jobs:
 
       # bootstrap_vcpkg.py (pinned commit, HEAD and tool SHA-512 checks,
       # VCPKG_BINARY_SOURCES starting `clear;`), configure, cache-health line,
-      # build. Logs stay in $CI_TEMP_DIR/ci-logs.
+      # build. Logs stay in $CI_TEMP_DIR/ci-logs. On a packaging leg it also
+      # sets the step output binary_cache_<leg> (RP-4).
       - name: Compile
         id: compile
         if: matrix.leg != 'windows' && matrix.leg != 'windows-x64'

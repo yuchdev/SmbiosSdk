@@ -92,7 +92,12 @@ COMMIT = re.compile(r"^(?:[0-9a-f]{40}|unknown)$")
 CONFIG = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,31}$")
 #: Manifest fields of one leg entry, in D4 order, plus the platform-minimum key per OS.
 LEG_FIELDS: Tuple[str, ...] = ("leg", "file", "sha256", "bytes", "config", "install_sha256",
-                               "files", "arch")
+                               "files", "arch", "binary_cache")
+#: ``binary_cache`` values (threat model 2026-11-18 RP-4, CR-2): ``none`` only when the
+#: build job built every vcpkg dependency from source (``VCPKG_BINARY_SOURCES=clear``
+#: and 0 restored packages); anything else, unknown included, is ``restored``. A
+#: ``release``-tier publish destination refuses a leg that is not ``none``.
+BINARY_CACHE_VALUES: Tuple[str, ...] = ("none", "restored")
 PLATFORM_KEYS: Dict[str, str] = {"linux": "glibc", "macos": "macos_min", "windows": "msvc"}
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _META_VALUE = re.compile(r"^[0-9A-Za-z._+-]{1,64}$")
@@ -645,7 +650,8 @@ def update_manifest(manifest: Path, leg: str, archive: Path, meta: Mapping[str, 
     """Merge ``leg``'s entry into ``manifest`` (ADR 0005 D4), creating the file if needed.
 
     ``meta`` must hold ``version``, ``commit``, ``config``, ``install_sha256``,
-    ``files`` and ``arch`` (which must include the leg's architecture), and
+    ``files``, ``binary_cache`` (:data:`BINARY_CACHE_VALUES`; RP-4) and
+    ``arch`` (which must include the leg's architecture), and
     the platform key of the leg's OS
     (:data:`PLATFORM_KEYS`); it may hold ``sha256`` (the archive digest already
     computed by the caller, so it is computed once). Otherwise the digest is
@@ -662,9 +668,12 @@ def update_manifest(manifest: Path, leg: str, archive: Path, meta: Mapping[str, 
     """
     os_name = leg_os(leg)
     platform_key = PLATFORM_KEYS[os_name]
-    for key in ("version", "commit", "config", "install_sha256", "files", "arch", platform_key):
+    for key in ("version", "commit", "config", "install_sha256", "files", "arch",
+                "binary_cache", platform_key):
         if not isinstance(meta.get(key), str):
             raise ArchiveError(f"manifest metadata lacks {key}")
+    if meta["binary_cache"] not in BINARY_CACHE_VALUES:
+        raise ArchiveError("manifest metadata binary_cache is malformed")
     checks = {"version": VERSION, "commit": COMMIT, "config": CONFIG, "install_sha256": _HEX64,
               "files": re.compile(r"^\d{1,9}$"), "arch": ARCH, platform_key: _META_VALUE}
     for key, rx in checks.items():
@@ -690,6 +699,7 @@ def update_manifest(manifest: Path, leg: str, archive: Path, meta: Mapping[str, 
         "leg": leg, "file": archive.name, "sha256": digest, "bytes": archive.stat().st_size,
         "config": meta["config"], "install_sha256": meta["install_sha256"],
         "files": int(meta["files"]), "arch": meta["arch"], platform_key: meta[platform_key],
+        "binary_cache": meta["binary_cache"],
     }
     legs = [e for e in data["legs"] if e.get("leg") != leg] + [entry]  # type: ignore[union-attr]
     data["legs"] = sorted(legs, key=lambda e: str(e["leg"]))
@@ -717,7 +727,10 @@ def leg_entry(manifest: Path) -> Tuple[str, str, Dict[str, object]]:
             and entry.get("file") == archive_name(version, leg)
             and isinstance(entry.get("sha256"), str) and _HEX64.match(entry["sha256"])
             and isinstance(entry.get("arch"), str) and ARCH.match(entry["arch"])
-            and leg.split("-", 1)[1] in entry["arch"].split("+")):
+            and leg.split("-", 1)[1] in entry["arch"].split("+")
+            and entry.get("binary_cache") in BINARY_CACHE_VALUES
+            and isinstance(entry.get("install_sha256"), str)
+            and _HEX64.match(entry["install_sha256"])):
         raise ArchiveError(f"{MANIFEST_NAME} part has a malformed leg entry")
     return version, commit, entry
 

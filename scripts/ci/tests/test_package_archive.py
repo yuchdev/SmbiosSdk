@@ -229,7 +229,8 @@ class ManifestTests(unittest.TestCase):
     def meta(self, os_key: str, value: str, **extra: str) -> Dict[str, str]:
         arch = {"glibc": "x64", "msvc": "x64", "macos_min": "arm64"}[os_key]
         base = {"version": "1.0.0", "commit": COMMIT, "config": "Release",
-                "install_sha256": "a" * 64, "files": "42", "arch": arch, os_key: value}
+                "install_sha256": "a" * 64, "files": "42", "arch": arch, os_key: value,
+                "binary_cache": "none"}
         base.update(extra)
         return base
 
@@ -249,7 +250,7 @@ class ManifestTests(unittest.TestCase):
                                  "sha256": hashlib.sha256(b"linux archive bytes").hexdigest(),
                                  "bytes": len(b"linux archive bytes"), "config": "Release",
                                  "install_sha256": "a" * 64, "files": 42, "arch": "x64",
-                                 "glibc": "2.34"})
+                                 "glibc": "2.34", "binary_cache": "none"})
 
     def test_LegsMergeSortedAndAReRunReplacesItsLeg(self) -> None:
         mac = self.archive("macos-arm64", b"mac")
@@ -291,7 +292,11 @@ class ManifestTests(unittest.TestCase):
                  self.meta("glibc", "2.34", version="2.0.0"),     # name says 1.0.0
                  self.meta("glibc", "2.34", arch="arm64"),        # leg says x64
                  self.meta("glibc", "2.34", arch="x86_64"),       # not a leg arch name
-                 {k: v for k, v in self.meta("glibc", "2.34").items() if k != "arch"}]
+                 {k: v for k, v in self.meta("glibc", "2.34").items() if k != "arch"},
+                 # threat model 2026-11-18 RP-4: binary_cache is required and allowlisted
+                 {k: v for k, v in self.meta("glibc", "2.34").items() if k != "binary_cache"},
+                 self.meta("glibc", "2.34", binary_cache="cold"),
+                 self.meta("glibc", "2.34", binary_cache="")]
         for meta in cases:
             with self.subTest(meta=meta), self.assertRaises(pa.ArchiveError):
                 pa.update_manifest(self.manifest, "linux-x64", archive, meta)
@@ -517,7 +522,8 @@ class PackageStageTests(unittest.TestCase):
             self.assertRegex(ok, rf"^ok: package {leg}: libbios-\d+\.\d+\.\d+-{leg}\."
                                  r"(tar\.gz|zip), \d+ files, \d+ bytes, sha256 [0-9a-f]{16}, "
                                  r"Release, (glibc 2\.34|msvc 14\.44|macos_min 13\.0), "
-                                 r"(x64|arm64) ")
+                                 r"(x64|arm64), binary cache restored ")
+            self.assertIn(f'output: archive_sha256_{leg.replace("-", "_")}="', proc.stdout)
         dist = self.tmp / "artifacts" / "dist"
         manifest = json.loads((dist / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["commit"], COMMIT)
@@ -528,6 +534,8 @@ class PackageStageTests(unittest.TestCase):
                 archive = dist / entry["file"]
                 self.assertEqual(entry["sha256"], hashlib.sha256(archive.read_bytes()).hexdigest())
                 self.assertEqual(entry["bytes"], archive.stat().st_size)
+                # RP-4: a local run without CI_BINARY_CACHE can never pass the release tier.
+                self.assertEqual(entry["binary_cache"], "restored")
                 self.assertEqual(entry["config"], "Release")
                 self.assertEqual(entry["arch"], entry["leg"].split("-")[1])
                 self.assertEqual((dist / (entry["file"] + ".sha256")).read_text(),
@@ -658,6 +666,29 @@ class HandOffTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 2)
         self.assertNotIn("rm", proc.stderr)
 
+    def test_BinaryCacheFromTheBuildJobIsRecorded(self) -> None:
+        """RP-4 normal case: CI_BINARY_CACHE (the build job's output) lands in the leg entry."""
+        proc = run_package(self.tmp, ["--leg", "linux-x64"], CI_INSTALL_SHA256=self.digest,
+                           CI_BINARY_CACHE="none")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("binary cache none", proc.stdout)
+        manifest = json.loads((self.art / "dist" / "manifest.json").read_text())
+        self.assertEqual(manifest["legs"][0]["binary_cache"], "none")
+
+    def test_BinaryCacheInvalidOrMissingOnCiExits2(self) -> None:
+        """RP-4 invalid input: a value outside none|restored, or none on CI, is a usage error."""
+        proc = run_package(self.tmp, ["--leg", "linux-x64"], CI_INSTALL_SHA256=self.digest,
+                           CI_BINARY_CACHE="cold;EVIL")
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertIn("CI_BINARY_CACHE must be none or restored", proc.stderr)
+        self.assertNotIn("EVIL", proc.stdout + proc.stderr)
+        proc = run_package(self.tmp, ["--leg", "linux-x64"], CI_PLATFORM="github",
+                           CI_REPORTER="plain", CI_EVENT="pr", CI_REF="refs/pull/1/merge",
+                           CI_INSTALL_SHA256=self.digest, CI_OUTPUT_FILE=str(self.tmp / "out"))
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertIn("CI_BINARY_CACHE is required on CI", proc.stderr)
+        self.assertFalse((self.art / "dist" / "manifest.json").exists())
+
     def test_CiNeverFallsBackToAnExistingTree(self) -> None:
         (self.art / "install-linux-x64.tar").unlink()
         make_tree(self.art / "install" / "linux-x64", "linux")
@@ -768,6 +799,66 @@ class ManifestMergeTests(unittest.TestCase):
                 proc = run_package(self.tmp, ["--leg", "linux-x64", "--only", "manifest"])
                 self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
                 self.assertIn("malformed leg entry", proc.stdout)
+
+    def expectations(self, **override: Dict[str, str]) -> Dict[str, str]:
+        """CI_PACKAGE_LEGS / CI_PACKAGE_ARCHIVES as the workflow builds them from job outputs."""
+        rows, archives = [], {}
+        for leg in ("linux-x64", "windows-x64", "macos-arm64"):
+            _, _, entry = pa.leg_entry(self.art / "parts" / f"dist-{leg}" / "manifest.json")
+            row = {"leg": leg, "install_sha256": entry["install_sha256"], "artifact_id": "7",
+                   "binary_cache": entry["binary_cache"]}
+            row.update(override.get(leg, {}))
+            archives[leg] = row.pop("sha256", entry["sha256"])
+            rows.append(row)
+        return {"CI_PACKAGE_LEGS": json.dumps(rows), "CI_PACKAGE_ARCHIVES": json.dumps(archives)}
+
+    def test_PartsMatchingTheJobOutputsMergeAndExportTheAnchor(self) -> None:
+        """RP-4 normal case: the merge checks every part and exports manifest_sha256."""
+        proc = run_package(self.tmp, ["--leg", "linux-x64", "--only", "manifest"],
+                           **self.expectations())
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("archives, install digests and binary cache match the build and package "
+                      "jobs", proc.stdout)
+        digest = hashlib.sha256((self.art / "dist" / "manifest.json").read_bytes()).hexdigest()
+        self.assertIn(f'output: manifest_sha256="{digest}"', proc.stdout)
+
+    def test_PartDisagreeingWithAJobOutputIsRefused(self) -> None:
+        """RP-4: archive and manifest part replaced together still differ from the job outputs."""
+        for leg, field, label in (("windows-x64", "sha256", "archive digest (package job output)"),
+                                  ("macos-arm64", "install_sha256",
+                                   "install digest (build job output)"),
+                                  ("linux-x64", "binary_cache", "binary_cache (build job output)")):
+            with self.subTest(field=field):
+                value = "none" if field == "binary_cache" else "c" * 64
+                if field == "binary_cache":
+                    _, _, entry = pa.leg_entry(self.art / "parts" / f"dist-{leg}" /
+                                               "manifest.json")
+                    value = "none" if entry["binary_cache"] == "restored" else "restored"
+                proc = run_package(self.tmp, ["--leg", "linux-x64", "--only", "manifest"],
+                                   **self.expectations(**{leg: {field: value}}))
+                self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                self.assertIn(f"dist-{leg} {label}: expected {value[:16]} -> actual ",
+                              proc.stdout)
+                self.assertNotIn("output: manifest_sha256", proc.stdout)
+
+    def test_JobOutputsRequiredOnCiAndValidated(self) -> None:
+        """RP-4 invalid input: missing on CI, malformed, or not naming every leg: exit 2."""
+        proc = run_package(self.tmp, ["--leg", "linux-x64", "--only", "manifest"],
+                           CI_PLATFORM="github", CI_REPORTER="plain", CI_EVENT="pr",
+                           CI_REF="refs/pull/1/merge", CI_OUTPUT_FILE=str(self.tmp / "out"))
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertIn("CI_PACKAGE_LEGS and CI_PACKAGE_ARCHIVES are required on CI", proc.stderr)
+        good = self.expectations()
+        rows = json.loads(good["CI_PACKAGE_LEGS"])
+        for bad in ({"CI_PACKAGE_LEGS": "[{not json"},
+                    {"CI_PACKAGE_LEGS": json.dumps(rows[:2])},
+                    {"CI_PACKAGE_LEGS": json.dumps(rows + rows[:1])},
+                    {"CI_PACKAGE_ARCHIVES": json.dumps({"linux-x64": "x;EVIL"})}):
+            with self.subTest(bad=bad):
+                proc = run_package(self.tmp, ["--leg", "linux-x64", "--only", "manifest"],
+                                   **{**good, **bad})
+                self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+                self.assertNotIn("EVIL", proc.stdout + proc.stderr)
 
     def test_MissingLegPartIsRefused(self) -> None:
         import shutil

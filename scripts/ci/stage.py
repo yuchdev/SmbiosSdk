@@ -3,7 +3,8 @@
 
 One workflow step is one invocation of this command::
 
-    python3 scripts/ci/stage.py <lint|build|test|package|verify|publish> [--leg <leg>] [--only <step>]
+    python3 scripts/ci/stage.py <lint|build|test|package|verify> [--leg <leg>] [--only <step>]
+    python3 scripts/ci/stage.py publish --destination <name> --only <phase> | --dry-run
     python3 scripts/ci/stage.py summary [--leg <leg>] [--job-failed]
     python3 scripts/ci/stage.py report
     python3 scripts/ci/stage.py plan
@@ -11,8 +12,8 @@ One workflow step is one invocation of this command::
 Every sub-step goes through the ``ci_step`` library (RC1-RC3), so a green
 sub-step prints exactly one ``ok:``/``info:``/``skip:`` line (plus the RC4
 header). Milestone 0014 Story 03.0 Task 01 implemented ``lint``, ``build`` and
-``test``; milestone 0012 Story 03.0 Task 01 adds ``package``.
-``verify``/``publish`` (0012 Story 04.0) exit 2 until they are defined.
+``test``; milestone 0012 Story 03.0 Task 01 adds ``package``; Story 04.0 Task 02
+adds ``publish``. ``verify`` (Story 04.0 Task 04) exits 2 until it is defined.
 
 Stages and their steps (``--only`` selects one; without it every step runs in
 this order):
@@ -74,6 +75,29 @@ legs only; it never configures or builds; stops at the first failing step):
     workflow's literal-path upload (P15). ``manifest`` (``--only manifest``,
     the manifest job): merges the per-leg ``parts/dist-<leg>/`` into the one
     ``dist/manifest.json``; it skips in a per-leg run.
+
+    The manifest job also refuses a part whose archive digest, install digest
+    or ``binary_cache`` differs from the package and build jobs' own outputs
+    (``CI_PACKAGE_ARCHIVES``, ``CI_PACKAGE_LEGS``; required on CI), and
+    exports ``manifest_sha256``, the out-of-band anchor of ``dist/manifest.json``
+    (threat model 2026-11-18 RP-4). Each leg entry records the build job's
+    ``binary_cache`` (``CI_BINARY_CACHE``; ``restored`` on a local run), and
+    each package job exports ``archive_sha256_<leg>``. The build job's
+    ``compile`` step exports ``binary_cache_<leg>`` on a packaging leg:
+    ``none`` only for ``VCPKG_BINARY_SOURCES=clear`` with 0 restored packages.
+``publish`` (milestone 0012 Story 04.0 Task 02; ADR 0005 D6/D9; not leg-based;
+:func:`run_publish`): ``--destination <name>`` names an entry of
+``publish_destinations.json``; ``--only`` is one phase per job: ``preflight``
+(settings drift + tag/commit binding; writes nothing), ``draft``
+(``release-draft``) or ``promote`` (``release-promote``). ``--dry-run`` lists
+every read and write with no network and without reading the credential. A
+real run refuses a disabled destination, a local run, an event outside the
+tier, an unanchored or invalid manifest (``CI_MANIFEST_SHA256``), a leg that
+is not cold-built (``CI_BUILD_BINARY_CACHE``), and a missing verify result
+(``CI_VERIFIED_MANIFEST_SHA256``; verify is Task 04, so today it always
+refuses). ``CI_PUBLISH_TOKEN`` leaves ``os.environ`` before anything else runs
+and no child process is started. Rules: ``publish_inputs.py`` and
+``publish_github_release.py``.
 
 Sanitizer legs (Story 03.0 Task 02; legs with ``"job": "sanitizers"``,
 inventory C12-C14): ``build`` configures into ``build/<preset>-asan`` with
@@ -171,6 +195,8 @@ STEPS: Final[Dict[str, Tuple[str, ...]]] = {
     "test": ("unit", "cli-formats", "live-table", "consumer", "gui-binary", "gui-hooks",
              "gui-ci", "gui-local"),
     "package": ("env", "unpack", "archive", "manifest"),
+    # 0012 Story 04.0 Task 02: one phase per publish job (run_publish; not leg-based).
+    "publish": ("preflight", "draft", "promote"),
 }
 #: Run order of each (stage, job); a stage absent here runs all of ``STEPS``.
 JOB_STEPS: Final[Dict[Tuple[str, str], Tuple[str, ...]]] = {
@@ -792,20 +818,43 @@ def step_compile(ctx: Context) -> int:
     rc = bootstrap_vcpkg.main(args)
     if rc != 0:
         return rc
-    if ctx.leg.packaging:  # recorded for the 0012 manifest (CR-2)
-        cache = "none" if os.environ.get("VCPKG_BINARY_SOURCES") == "clear" else "restored"
-        ctx.reporter.set_output("binary_cache", cache)
     vcpkg_cache_report.main(["--reporter", ctx.reporter.name, "snapshot"])
     rc = ctx.run("configure", configure_argv(ctx), patterns=["cmake", "vcpkg"])
     if rc != 0:
         cap_upload_logs(ctx)
         return rc
+    configure_log = ci_step.log_path_for("configure", ctx.log_dir)
+    if ctx.leg.packaging:  # recorded in the 0012 manifest (CR-2, threat model RP-4)
+        ctx.reporter.set_output(binary_cache_output_name(ctx.leg.name),
+                                binary_cache_state(os.environ.get("VCPKG_BINARY_SOURCES"),
+                                                   configure_log))
     vcpkg_cache_report.main(["--reporter", ctx.reporter.name, "report", "--log",
-                             str(ci_step.log_path_for("configure", ctx.log_dir))])
+                             str(configure_log)])
     rc = ctx.run("build", build_argv(ctx), patterns=["cxx"])
     if rc != 0:
         cap_upload_logs(ctx)
     return rc
+
+
+def binary_cache_output_name(leg: str) -> str:
+    """The per-leg build-job output carrying the binary-cache state (``binary_cache_linux_x64``)."""
+    return "binary_cache_" + leg.replace("-", "_")
+
+
+def binary_cache_state(binary_sources: Optional[str], configure_log: Path) -> str:
+    """Return ``none`` only for a provably cold build, else ``restored`` (threat model RP-4).
+
+    ``none`` needs both: ``VCPKG_BINARY_SOURCES`` was exactly ``clear`` (no
+    binary source configured, CR-2), **and** ``vcpkg_cache_report.parse_log``
+    read the configure log and counted 0 restored packages. An unreadable or
+    unparseable log counts as ``restored`` (fail closed): the value is an
+    observation, not only a self-report of the configuration.
+    """
+    import vcpkg_cache_report
+    if binary_sources != "clear":
+        return "restored"
+    restored, _built = vcpkg_cache_report.parse_log(configure_log)
+    return "none" if restored == 0 else "restored"
 
 
 def handoff_path(ctx: Context) -> Path:
@@ -1140,6 +1189,7 @@ def step_manifest(ctx: Context) -> int:
                                        "parts/dist-<leg>/, downloaded from the package jobs)",
                            start)
     legs = load_legs().get("stages", {}).get("package", [])  # type: ignore[union-attr]
+    expected = _manifest_expectations(ctx, legs)
     dist = ctx.artifact_dir / "dist"
     if dist.is_symlink():
         return ctx.fail(label, "dist directory is a symlink", start)
@@ -1163,6 +1213,8 @@ def step_manifest(ctx: Context) -> int:
                     raise pa.ArchiveError(f"part dist-{leg} lacks {path.name}")
             if pa.sha256_file(archive) != entry["sha256"]:
                 raise pa.ArchiveError(f"{name}: digest differs from its part's manifest entry")
+            if expected is not None:
+                _check_part_against_jobs(leg, entry, expected[leg])
             if side.read_text(encoding="ascii", errors="replace") != \
                     f"{entry['sha256']}  {name}\n":
                 raise pa.ArchiveError(f"{side.name} differs from its part's manifest entry")
@@ -1173,15 +1225,129 @@ def step_manifest(ctx: Context) -> int:
                     raise pa.ArchiveError(f"{target.name} in dist/ is a symlink")
                 shutil.copyfile(path, target)
             pa.merge_entry(manifest, version, commit, entry)
+        manifest_sha = pa.sha256_file(manifest)
     except pa.ArchiveError as exc:
         return ctx.fail(label, str(exc), start)
     ctx.reporter.set_output("version", version)
-    summary = f"{pa.MANIFEST_NAME}: {len(legs)} legs, version {version}"
+    # RP-4 / constraint 4: the out-of-band anchor verify and publish check
+    # before they parse the manifest (computed once, here, by its writer).
+    ctx.reporter.set_output("manifest_sha256", manifest_sha)
+    check = ("archives, install digests and binary cache match the build and package jobs"
+             if expected is not None else "job outputs not checked (local run)")
+    summary = (f"{pa.MANIFEST_NAME}: {len(legs)} legs, version {version}, "
+               f"sha256 {manifest_sha[:16]}, {check}")
     elapsed = round(time.monotonic() - start, 1)
     ctx.emit(ctx.reporter.step_ok(label, summary, elapsed))
     ci_step.append_record(ci_step.StepResult(label, "hard", "ok", 0, elapsed, summary, None,
                                              None), ctx.results)
     return 0
+
+
+def archive_output_name(leg: str) -> str:
+    """The per-leg package-job output carrying the archive digest (``archive_sha256_linux_x64``)."""
+    return "archive_sha256_" + leg.replace("-", "_")
+
+
+def _binary_cache_input(ctx: Context) -> str:
+    """Return the leg's ``binary_cache`` for its manifest entry (``CI_BINARY_CACHE``; RP-4).
+
+    On CI the value is required: it is the build job's own
+    ``binary_cache_<leg>`` output. A local run without it records
+    ``restored`` (fail closed: a local archive can never satisfy the release
+    tier's cold-build rule, CR-2).
+
+    Raises:
+        UsageError: The value is missing on CI or not ``none``/``restored``.
+    """
+    import package_archive as pa
+    value = env_names.get("CI_BINARY_CACHE")
+    if not value:
+        if not ctx.local:
+            raise UsageError("CI_BINARY_CACHE is required on CI (the build job's binary_cache "
+                             "output, threat model RP-4)")
+        return "restored"
+    if value not in pa.BINARY_CACHE_VALUES:
+        raise UsageError("CI_BINARY_CACHE must be none or restored")
+    return value
+
+
+def _json_input(name: str, max_bytes: int = 8192) -> object:
+    """Parse the single-line JSON value of the neutral variable ``name`` (never echoed).
+
+    Raises:
+        UsageError: The value is too long, multi-line or not JSON.
+    """
+    text = env_names.get(name)
+    if len(text) > max_bytes or "\n" in text or "\r" in text:
+        raise UsageError(f"{name} is not a single-line JSON value")
+    try:
+        return json.loads(text)
+    except (ValueError, RecursionError):
+        raise UsageError(f"{name} is not JSON") from None
+
+
+def _manifest_expectations(ctx: Context, legs: Sequence[str]
+                           ) -> Optional[Dict[str, Dict[str, str]]]:
+    """Return the per-leg values the build and package jobs exported, or ``None`` locally.
+
+    Threat model RP-4: the manifest job must not trust the parts it downloads
+    (any job of the run can replace an artifact, CR-8), so it compares each
+    part with job outputs written by the jobs that produced them:
+    ``CI_PACKAGE_LEGS`` (the build job's ``install_sha256_<leg>`` and
+    ``binary_cache_<leg>``) and ``CI_PACKAGE_ARCHIVES`` (the package jobs'
+    ``archive_sha256_<leg>``). Both are required on CI; a local run without
+    them skips the check and says so.
+
+    Raises:
+        UsageError: A value is missing on CI, malformed, or does not name
+            exactly the packaging legs.
+    """
+    import package_archive as pa
+    raw_legs, raw_archives = env_names.get("CI_PACKAGE_LEGS"), env_names.get("CI_PACKAGE_ARCHIVES")
+    if not raw_legs and not raw_archives and ctx.local:
+        return None
+    if not raw_legs or not raw_archives:
+        raise UsageError("CI_PACKAGE_LEGS and CI_PACKAGE_ARCHIVES are required on CI (the build "
+                         "and package jobs' digest outputs, threat model RP-4)")
+    rows, archives = _json_input("CI_PACKAGE_LEGS"), _json_input("CI_PACKAGE_ARCHIVES")
+    if not (isinstance(rows, list) and all(isinstance(r, dict) for r in rows)
+            and isinstance(archives, dict)):
+        raise UsageError("CI_PACKAGE_LEGS must be a list of objects and CI_PACKAGE_ARCHIVES "
+                         "an object")
+    out: Dict[str, Dict[str, str]] = {}
+    for row in rows:
+        leg = row.get("leg")
+        if not (isinstance(leg, str) and leg in legs and leg not in out):
+            raise UsageError("CI_PACKAGE_LEGS names a leg that is not a packaging leg, or twice")
+        values = {"install_sha256": row.get("install_sha256"),
+                  "binary_cache": row.get("binary_cache"), "sha256": archives.get(leg)}
+        if not (isinstance(values["install_sha256"], str)
+                and _HEX64.fullmatch(values["install_sha256"])
+                and isinstance(values["sha256"], str) and _HEX64.fullmatch(values["sha256"])
+                and values["binary_cache"] in pa.BINARY_CACHE_VALUES):
+            raise UsageError("CI_PACKAGE_LEGS/CI_PACKAGE_ARCHIVES hold a malformed digest or "
+                             "binary_cache value")
+        out[leg] = {k: str(v) for k, v in values.items()}
+    if set(out) != set(legs) or set(archives) != set(legs):
+        raise UsageError("CI_PACKAGE_LEGS/CI_PACKAGE_ARCHIVES must name every packaging leg once")
+    return out
+
+
+def _check_part_against_jobs(leg: str, entry: Mapping[str, object],
+                             expected: Mapping[str, str]) -> None:
+    """Refuse a part whose archive, install digest or binary cache differs from the job outputs.
+
+    Raises:
+        package_archive.ArchiveError: The first discrepancy, in RC1 form.
+    """
+    import package_archive as pa
+    for key, what in (("sha256", "archive digest (package job output)"),
+                      ("install_sha256", "install digest (build job output)"),
+                      ("binary_cache", "binary_cache (build job output)")):
+        have, want = str(entry.get(key)), expected[key]
+        if have != want:
+            raise pa.ArchiveError(f"dist-{leg} {what}: expected {want[:16]} -> actual "
+                                  f"{have[:16]}")
 
 
 def step_archive(ctx: Context) -> int:
@@ -1203,6 +1369,7 @@ def step_archive(ctx: Context) -> int:
                                        "package stage never builds)", start)
     config = _shipped_config(ctx)
     commit = _commit(ctx)
+    binary_cache = _binary_cache_input(ctx)
     try:
         outcome = check_versions.check(ctx.workspace)
     except check_versions.SitesError as exc:
@@ -1230,15 +1397,19 @@ def step_archive(ctx: Context) -> int:
         pa.update_manifest(dist / pa.MANIFEST_NAME, leg, archive,
                            {"version": version, "commit": commit, "config": config,
                             "install_sha256": digest, "files": str(count), "sha256": sha,
-                            **meta})
+                            "binary_cache": binary_cache, **meta})
     except pa.ArchiveError as exc:
         return ctx.fail(label, str(exc), start)
     ctx.reporter.set_output("version", version)
     ctx.reporter.set_output("archive_ext", pa.archive_format(leg))
     ctx.reporter.set_output("package_digest", {"leg": leg, "file": archive.name, "sha256": sha})
+    # RP-4: one uniquely named output per leg (the matrix job's combined
+    # outputs never overwrite each other), the manifest job's out-of-band check.
+    ctx.reporter.set_output(archive_output_name(leg), sha)
     key = pa.PLATFORM_KEYS[os_name]
     summary = (f"{archive.name}, {count} files, {archive.stat().st_size} bytes, "
-               f"sha256 {sha[:16]}, {config}, {key} {meta[key]}, {meta['arch']}")
+               f"sha256 {sha[:16]}, {config}, {key} {meta[key]}, {meta['arch']}, "
+               f"binary cache {binary_cache}")
     elapsed = round(time.monotonic() - start, 1)
     ctx.emit(ctx.reporter.step_ok(label, summary, elapsed))
     ci_step.append_record(ci_step.StepResult(label, "hard", "ok", 0, elapsed, summary, None,
@@ -1305,6 +1476,10 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--reporter", default=None, help="github|teamcity|plain (default $CI_REPORTER)")
     p.add_argument("--job-failed", action="store_true",
                    help="summary only: the job failed outside any recorded step")
+    p.add_argument("--destination", default=None,
+                   help="publish only: a name from scripts/ci/publish_destinations.json")
+    p.add_argument("--dry-run", action="store_true",
+                   help="publish only: list every read and write; no network, no credential")
     return p
 
 
@@ -1380,6 +1555,217 @@ def run_plan(reporter: Reporter) -> int:
     return EXIT_OK
 
 
+# ---------------------------------------------------------------------------
+# publish (milestone 0012 Story 04.0 Task 02; ADR 0005 D6/D9)
+# ---------------------------------------------------------------------------
+
+#: The publish destination registry (ADR 0005 D9; policy P12).
+DESTINATIONS_FILE: Final = Path(_HERE) / "publish_destinations.json"
+#: Destination modules, until 0012 Story 04.0 Task 05 moves them to
+#: ``scripts/ci/destinations/<name>.py`` behind the D9 interface.
+DESTINATION_MODULES: Final[Dict[str, str]] = {"github-release": "publish_github_release"}
+_DESTINATION_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+
+
+def load_destination(name: Optional[str], path: Optional[Path] = None) -> Dict[str, object]:
+    """Return the registry entry of destination ``name`` (``publish_destinations.json``).
+
+    Raises:
+        UsageError: The name is malformed, unknown, has no module, or the
+            entry is not well formed (never echoes the name).
+    """
+    if name is None or not _DESTINATION_NAME.fullmatch(name):
+        raise UsageError("--destination must name an entry of scripts/ci/"
+                         "publish_destinations.json")
+    try:
+        data = json.loads((path or DESTINATIONS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise UsageError("cannot read publish_destinations.json") from None
+    entries = data.get("destinations") if isinstance(data, dict) else None
+    entry = next((e for e in entries if isinstance(e, dict) and e.get("name") == name), None) \
+        if isinstance(entries, list) else None
+    if entry is None or name not in DESTINATION_MODULES:
+        raise UsageError("--destination must name an entry of scripts/ci/"
+                         "publish_destinations.json that has a module")
+    if not (isinstance(entry.get("enabled"), bool) and entry.get("tier") in ("release", "staging")
+            and entry.get("environment") == entry.get("tier")):
+        raise UsageError("publish_destinations.json: the entry needs enabled, a tier and an "
+                         "environment equal to it")
+    return entry
+
+
+def _publish_record(label: str, ok: bool, start: float, text: str, results: Path) -> None:
+    elapsed = round(time.monotonic() - start, 1)
+    ci_step.append_record(ci_step.StepResult(label, "hard", "ok" if ok else "fail",
+                                             0 if ok else EXIT_GATE, elapsed,
+                                             text if ok else "", None if ok else text, None),
+                          results)
+
+
+def _publish_inputs(entry: Mapping[str, object], dry_run: bool, log: Callable[[str], None]):
+    """Load, anchor and validate everything the destination will act on (constraints 4-6).
+
+    A dry run accepts a missing anchor, tag, commit, run id or build
+    binary-cache map, says so in one ``info:`` line each, and substitutes the
+    manifest's own values; a real run refuses every one of them.
+
+    Raises:
+        publish_inputs.PublishInputError: The first refusal.
+    """
+    import publish_inputs as pin
+    legs = load_legs().get("stages", {}).get("package", [])  # type: ignore[union-attr]
+    dist = Path(env_names.get("CI_ARTIFACT_DIR", required=True)) / "dist"
+    anchor = env_names.get("CI_MANIFEST_SHA256")
+    if not anchor and dry_run:
+        raw = pin._read_regular(dist / "manifest.json", pin.MANIFEST_MAX_BYTES, "manifest.json")
+        anchor = hashlib.sha256(raw).hexdigest()
+        log("info: dry run: CI_MANIFEST_SHA256 unset, manifest not anchored (a real run "
+            "refuses this)")
+    raw, data = pin.load_anchored_manifest(dist, anchor)
+    view = pin.validate_manifest(data, anchor, len(raw), legs)
+    tag, commit, run_id = (env_names.get("CI_REF_NAME"), env_names.get("CI_COMMIT"),
+                           env_names.get("CI_RUN_ID"))
+    if dry_run and not pin.TAG.fullmatch(tag or ""):
+        tag = f"v{view.version}"
+        log(f"info: dry run: CI_REF_NAME is not a release tag; showing {tag}")
+    if dry_run and not commit:
+        commit = view.commit
+        log("info: dry run: CI_COMMIT unset; showing manifest.commit")
+    if dry_run and not pin.RUN_ID.fullmatch(run_id or ""):
+        run_id = "0"
+        log("info: dry run: CI_RUN_ID is not a run id; showing 0")
+    base, prerelease = pin.check_commit_binding(tag, view, commit)
+    pin.run_marker(run_id)
+    build = pin.parse_build_binary_cache(env_names.get("CI_BUILD_BINARY_CACHE"))
+    tier = str(entry["tier"])
+    if build is None and dry_run:
+        pin.check_binary_cache(view, "staging", None)
+        if tier == "release" and any(e.get("binary_cache") != "none" for e in view.legs):
+            pin.check_binary_cache(view, tier, {str(e["leg"]): "none" for e in view.legs})
+        log("info: dry run: CI_BUILD_BINARY_CACHE unset, build-job cross-check skipped (a real "
+            "run refuses this)")
+    else:
+        pin.check_binary_cache(view, tier, build)
+    return pin.ReleaseInputs(tag, base, prerelease, commit, run_id, view,
+                             pin.local_assets(dist, view))
+
+
+def _publish_gates(entry: Mapping[str, object], name: str) -> None:
+    """Real-run gates before any input is trusted or any request made (fail closed).
+
+    Raises:
+        publish_inputs.PublishInputError: The destination is disabled, this is
+            a local run, or the event is not the tier's.
+    """
+    import publish_inputs as pin
+    if entry.get("enabled") is not True:
+        raise pin.PublishInputError(f"{name}: expected enabled in publish_destinations.json -> "
+                                    "actual disabled (threat model constraint 12: settings "
+                                    "S-1..S-8 read back first)")
+    if env_names.get("CI_PLATFORM") == "local":
+        raise pin.PublishInputError(f"{name}: expected a CI run -> actual a local run (use "
+                                    "--dry-run)")
+    event, ref, ref_name = (env_names.get("CI_EVENT"), env_names.get("CI_REF"),
+                            env_names.get("CI_REF_NAME"))
+    if entry.get("tier") == "release" and not (event == "tag" and ref == "refs/tags/" + ref_name):
+        raise pin.PublishInputError(f"{name}: expected a release tag event -> actual "
+                                    f"{event or 'none'} (release tier, ADR 0005 D6)")
+    if entry.get("tier") == "staging" and not (event == "push" and ref == MASTER_REF):
+        raise pin.PublishInputError(f"{name}: expected a push to master -> actual "
+                                    f"{event or 'none'} (staging tier, ADR 0005 D9)")
+
+
+def run_publish(args: argparse.Namespace) -> int:
+    """``stage.py publish --destination <name> --only preflight|draft|promote [--dry-run]``.
+
+    The credential (``CI_PUBLISH_TOKEN``) is removed from ``os.environ`` before
+    anything else runs (RP-8) and handed to the destination as a redacted
+    :class:`publish_github_release.Secret`; a dry run discards it unread. No
+    child process is started on this path. Exit 0 success, 1 a refusal or a
+    failed request (one RC1 line), 2 a usage error, 70 an internal error
+    (type name only, never its message).
+    """
+    secret = os.environ.pop("CI_PUBLISH_TOKEN", "")
+    if args.dry_run:
+        secret = ""
+    try:
+        if args.leg is not None or args.job_failed:
+            raise UsageError("--leg and --job-failed are not valid with publish")
+        entry = load_destination(args.destination)
+        name = str(entry["name"])
+        steps = STEPS["publish"]
+        if args.only is not None and args.only not in steps:
+            raise UsageError(f"--only must be one of: {', '.join(steps)}")
+        if args.only is None and not args.dry_run:
+            raise UsageError("publish needs --only " + "|".join(steps) + " (one phase per job, "
+                             "ADR 0005 D6) or --dry-run")
+        try:
+            reporter = get_reporter(args.reporter)
+        except ValueError:
+            raise UsageError("reporter must be one of: github, teamcity, plain") from None
+        validate_event(env_names.get("CI_EVENT"), env_names.get("CI_REF"),
+                       env_names.get("CI_REF_NAME"))
+        results = Path(env_names.get("CI_RESULTS_FILE", required=True))
+    except UsageError as exc:
+        ci_step.emit_error(f"stage.py: error: {exc}")
+        return EXIT_USAGE
+    import importlib
+    import publish_inputs as pin
+    module = importlib.import_module(DESTINATION_MODULES[name])
+    label = f"publish {name}" + (f" {args.only}" if args.only else "") + \
+        (" (dry run)" if args.dry_run else "")
+    start = time.monotonic()
+
+    def log(line: str) -> None:
+        ci_step.emit(reporter.info(line))
+
+    try:
+        if not args.dry_run:
+            _publish_gates(entry, name)
+        inputs = _publish_inputs(entry, args.dry_run, log)
+        verified = env_names.get("CI_VERIFIED_MANIFEST_SHA256")
+        if args.dry_run:
+            if args.only != "preflight":
+                ci_step.emit([ln for line in module.dry_run_plan(
+                    inputs, env_names.get("CI_REPOSITORY") or "<owner>/<repo>", args.only)
+                    for ln in reporter.info(line)])
+            gate = ("passes" if verified == inputs.manifest.sha256 else
+                    "refuses (no verify result)" if not verified else "refuses (other manifest)")
+            state = "enabled" if entry.get("enabled") is True else "disabled (real run refuses)"
+            summary = (f"{inputs.tag}: {len(inputs.assets)} assets match manifest "
+                       f"{inputs.manifest.sha256[:16]}, {state}, verify gate {gate}, "
+                       "0 requests, credential unread")
+        else:
+            pin.check_verify_gate(inputs.manifest.sha256, verified)
+            api = module.GitHubApi(module.Secret(secret), env_names.get("CI_REPOSITORY"))
+            secret = ""
+            if args.only == "preflight":
+                module.settings_preflight(api, log)
+                module.commit_preflight(api, inputs)
+                summary = (f"preflight {inputs.tag}: tag and master ancestry bind "
+                           f"{inputs.commit[:12]}, {len(inputs.assets)} assets match the "
+                           "manifest")
+            else:
+                summary = getattr(module, args.only)(api, inputs, log)
+    except (pin.PublishInputError, getattr(module, "PublishError", pin.PublishInputError)) as exc:
+        text = str(exc).splitlines()[0] if str(exc) else "refused"
+        elapsed = round(time.monotonic() - start, 1)
+        ci_step.emit(reporter.step_fail(label, EXIT_GATE, elapsed, text, []))
+        _publish_record(label, False, start, text, results)
+        return EXIT_GATE
+    except UsageError as exc:
+        ci_step.emit_error(f"stage.py: error: {exc}")
+        return EXIT_USAGE
+    except Exception as exc:  # noqa: BLE001 - RC2: never a traceback, never the message (RP-8)
+        ci_step.emit([f"error: stage.py: internal error ({type(exc).__name__})"])
+        _publish_record(label, False, start, f"internal error ({type(exc).__name__})", results)
+        return 70
+    elapsed = round(time.monotonic() - start, 1)
+    ci_step.emit(reporter.step_ok(label, summary, elapsed))
+    _publish_record(label, True, start, summary, results)
+    return EXIT_OK
+
+
 def build_context(stage: str, leg_value: Optional[str], reporter: Reporter,
                   legs: Mapping[str, object]) -> Context:
     """Validate the neutral inputs and return the :class:`Context` (CR-6).
@@ -1436,6 +1822,12 @@ def _main_command(args: argparse.Namespace) -> int:
 def main(argv: Sequence[str]) -> int:
     """Validate the inputs, run the stage, return the SC1 exit code (never a traceback)."""
     args = _parser().parse_args(list(argv))
+    if args.stage == "publish":
+        return run_publish(args)
+    if args.destination is not None or args.dry_run:
+        ci_step.emit_error("stage.py: error: --destination and --dry-run are valid only with "
+                           "publish")
+        return EXIT_USAGE
     if args.stage in COMMANDS:
         return _main_command(args)
     try:

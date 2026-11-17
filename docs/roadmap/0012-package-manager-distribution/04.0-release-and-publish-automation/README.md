@@ -1,7 +1,7 @@
 # Story 04.0 - Release and Publish Automation
 
 **Parent milestone:** [plan.md](../plan.md)
-**Status:** 🔶 In progress (Task 01 complete, 2026-11-17)
+**Status:** 🔶 In progress (Task 01 complete, 2026-11-17; Task 02 implemented 2026-11-18, end-to-end proof blocked on settings S-1..S-8 and Task 04)
 **Depends on:** Stories 01.0, 02.0 and 03.0 (it automates their manual steps); milestone 0014 Stories 01.0-03.0 and Story 04.0 Task 02 (the pipeline foundation and the tier rows, per [ADR 0005](/docs/adr/0005-unified-build-package-publish-pipeline.md))
 
 ## Scope
@@ -22,7 +22,7 @@ Workflow conventions are not restated here. Pins, permissions, step shape, repor
 | #  | Document | Status | Blocks |
 |----|----------|--------|--------|
 | 01 | [Version sites and release preparation](01-version-source-and-release-prep.md) | ✅ Complete (2026-11-17) | 02 |
-| 02 | [Publish stage: gated draft, upload, promote](02-release-pipeline-draft-upload-publish.md) | ⬜ Not started | 03 |
+| 02 | [Publish stage: gated draft, upload, promote](02-release-pipeline-draft-upload-publish.md) | 🔶 Implemented (2026-11-18); criterion 1 blocked on S-1..S-8 read-back and Task 04 | 03 |
 | 03 | [Registry update in the publish stage](03-registry-update-automation.md) | ⬜ Not started | 04 |
 | 04 | [Verify stage and post-publish check](04-post-publish-verification.md) | ⬜ Not started | 05 |
 | 05 | [Publish destination plug-ins and the S3 staging example](05-publish-destination-plugins.md) | ⬜ Not started | - |

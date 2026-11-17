@@ -9,7 +9,7 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
 | 01.0  | `libsmbios` install rules and whole-archive-safe package export | ✅ Complete | - |
 | 02.0  | Self-hosted vcpkg overlay/registry port for `smbios_c`           | ✅ Complete | 25 script tests; registry smoke (macOS); CI full tier green |
 | 03.0  | GitHub Releases prebuilt artifacts - pipeline `package` stage (ADR 0005) | 🔶 In progress (Tasks 01-02 complete; Task 03 partial: verifier delivered, H1 fixed, arch guard added; SC1 on all three OSes awaits Story 04.0 Task 02) | 55 + 57 script tests (`test_package_archive`, `test_verify_release_artifact`); CI run 44074901424 green on all 18 jobs; all five release checks pass on macOS x64 with the literal `pkg-config` command |
-| 04.0  | Release and publish automation - pipeline `verify`/`publish` stages (ADR 0005) | 🔶 In progress (Task 01 complete: root `project()` VERSION authoritative, `prepare_release.py`; RP-3 ruling pending before Task 03) | 23 script tests (`test_prepare_release`) |
+| 04.0  | Release and publish automation - pipeline `verify`/`publish` stages (ADR 0005) | 🔶 In progress (Task 01 complete: root `project()` VERSION authoritative, `prepare_release.py`; RP-3 ruled 2026-11-18. Task 02 implemented: publish stage, `github-release` shipped `enabled: false`, RP-4 plumbing; criterion 1 blocked on S-1..S-8 read-back and Task 04) | 23 script tests (`test_prepare_release`); 47 publish tests (`test_publish_github_release`) plus RP-4 package, plan and policy cases |
 
 **Legend:** ✅ Complete · 🔶 In progress / partial · ⬜ Not started
 
@@ -174,3 +174,39 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
 
   **Minor, recorded not fixed (milestone 0014-owned):** `check_versions.py`'s `_show()` uses `re.match` with `$`, so a value ending in a newline is echoed rather than shown as `<invalid>`; and `version_sites.json`'s `interim_authoritative` key is now inert, with stale `about` text.
 
+- **2026-11-18 Story 04.0 Task 02 implemented (publish stage, GitHub Release); end-to-end proof blocked.** `stage.py publish --destination github-release --only preflight|draft|promote|--dry-run` (`scripts/ci/publish_github_release.py`, `scripts/ci/publish_inputs.py`), `.github/workflows/stage-publish.yml` (`release-draft`, `release-promote`: `repo-write`, `contents: write` only, `environment: release`, `v*` tag push only), the ci.yml caller `publish-release` (`needs: [plan, build, package, verify]`), and the `github-release` registry entry, **shipped `enabled: false`**. Details and the per-constraint enforcement table: [Task 02 As built](04.0-release-and-publish-automation/02-release-pipeline-draft-upload-publish.md#as-built-2026-11-18).
+
+  **No tag was pushed and no release, draft or otherwise, was created.** Success criterion 1 (a scratch pre-release tag yields a draft that is promoted only after `verify`) is **blocked** on two things. First, threat-model settings S-1..S-8 must be applied, read back and recorded here and in `docs/dev/ci.md` (constraint 12; this was also ruled on 2026-11-18). Second, Task 04's `verify`. Behaviour is proven instead by 47 stub-API tests against a loopback GitHub stub and by `--dry-run`. Criteria 2 and 3 are met.
+
+  **`needs: verify` before verify exists: wired, failing closed three ways.** `ci.yml` gained a `verify` caller of a **placeholder** `stage-verify.yml` (download `dist` by ID, `stage.py verify`, which still exits 2) so the publish caller can carry `needs: verify` (P12). Task 04 completes it, including the `verified_manifest_sha256` output. Until then three guards hold, each on its own:
+  1. **Plan:** `plan.py` gives no publish rows while `verify` is undefined (`publish: not run: stage not defined`).
+  2. **Stage:** `stage.py publish` refuses without `CI_VERIFIED_MANIFEST_SHA256` equal to the anchored manifest digest.
+  3. **Registry:** the disabled entry refuses every real run.
+
+  **RP-4 fixed (it made CR-2 unenforceable).**
+  - **Build job:** exports `binary_cache_<leg>`. The value is `none` only for `VCPKG_BINARY_SOURCES=clear` **and** 0 restored packages in the configure log; an unparseable log counts as `restored`.
+  - **Manifest:** `binary_cache` is now a required manifest leg field, carried in through `CI_BINARY_CACHE`.
+  - **Package jobs:** each exports `archive_sha256_<leg>` and `dist_artifact_<leg>`.
+  - **Manifest job:** downloads the parts by ID, cross-checks each part's archive, install digest and `binary_cache` against those job outputs, and exports `manifest_sha256` and `dist_artifact_id` as `stage-package.yml` workflow outputs.
+  - **Publish:** downloads `dist` by ID and checks `sha256(manifest.json)` before parsing. A `release` destination refuses a leg whose `binary_cache` is not exactly `none` (a missing field included) or that disagrees with the build job's outputs.
+  - **Not yet run on CI.** These workflow outputs have run only through actionlint and the policy gate locally. The first CI run that exercises them is the next `master` push or PR, whose package stage now runs the new cross-checks.
+
+  **Policy gate extended** (constraints 1 and 2; listed for Task 05, built here because this task's jobs are the first to need them). For a listed publish job:
+  - steps may only be checkout, `download-artifact` with `artifact-ids`, and exactly one `stage.py publish --destination` step (P12);
+  - `secrets.` may appear only in that step's `env:`, under `CI_PUBLISH_*` (P8);
+  - one failing fixture per new violation kind (`p12_publish_extra_step`, `p12_publish_download_by_name`, `p8_publish_secret_at_job_level`).
+
+  The fixture cases now default to an empty publish registry, because the repository's registry now names real jobs.
+
+  **Gates (local, macOS):**
+  - `stage.py lint --reporter plain` is green on all 8 steps, including `ok: workflow policy (0.9s)` and `ok: versions: 1.0.0 (root project() VERSION), 4 sites (0.0s)`; the `scripts/ci tests` step took 379.3 s.
+  - `check_doc_links.py docs/`: 0 problems.
+  - `--dry-run` against a synthetic three-leg `dist/` lists the 7 uploads with no request and the credential unread.
+  - The same inputs without `--dry-run` are refused at `github-release: expected enabled ... -> actual disabled`.
+
+  **Still open for the maintainer (blocking the first real tag):**
+  - apply S-1..S-8 and record the `gh api` read-backs;
+  - flip `enabled` only after that;
+  - push the first tag (`v1.0.1`, per the 2026-11-18 ruling) only after Task 04 lands.
+
+  The `release` environment's reviewers and self-review setting (RP-11) are part of S-5.

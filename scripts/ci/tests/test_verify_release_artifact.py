@@ -52,7 +52,7 @@ def make_release(tmp: Path, tree: Path = None, leg: str = LEG) -> Path:
     pa.update_manifest(dist / pa.MANIFEST_NAME, leg, archive,
                        {"version": VERSION, "commit": "unknown", "config": "Release",
                         "install_sha256": digest, "files": str(count), "sha256": sha,
-                        "arch": leg.split("-")[1], key: "2.38"})
+                        "arch": leg.split("-")[1], key: "2.38", "binary_cache": "restored"})
     return archive
 
 

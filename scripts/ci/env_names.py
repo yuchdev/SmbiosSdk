@@ -99,6 +99,44 @@ NAMES: Dict[str, EnvName] = {
                 "matrix.install_sha256 (ci.yml passes needs.build.outputs."
                 "install_sha256_<leg> into stage-package.yml's matrix)",
                 "the build configuration's install digest parameter, via a snapshot dependency"),
+        EnvName("CI_BINARY_CACHE",
+                "the build job's binary-cache state of this packaging leg (none / restored), "
+                "recorded in the leg's manifest entry (milestone 0012 Story 04.0 Task 02; "
+                "threat model 2026-11-18 RP-4, CR-2)",
+                "matrix.binary_cache (ci.yml passes needs.build.outputs.binary_cache_<leg> "
+                "into stage-package.yml's matrix)",
+                "the build configuration's binary-cache parameter, via a snapshot dependency"),
+        EnvName("CI_PACKAGE_LEGS",
+                "the manifest job's out-of-band expectation per leg: JSON list of {leg, "
+                "install_sha256, binary_cache, artifact_id} from the build job (RP-4)",
+                "matrix.legs (stage-package.yml's manifest job: its legs input)",
+                "the build configurations' digest parameters, via snapshot dependencies"),
+        EnvName("CI_PACKAGE_ARCHIVES",
+                "the manifest job's out-of-band archive digests: JSON object leg -> sha256, "
+                "from the per-leg package jobs' outputs (RP-4)",
+                "matrix.archives (stage-package.yml: needs.package.outputs."
+                "archive_sha256_<leg>)",
+                "the package configurations' digest parameters, via snapshot dependencies"),
+        EnvName("CI_MANIFEST_SHA256",
+                "sha256 of dist/manifest.json as the package stage's manifest job wrote it; "
+                "verify and publish check it before parsing the manifest (RP-4, constraint 4)",
+                "matrix.manifest_sha256 (needs.package.outputs.manifest_sha256 via the "
+                "stage workflow's input)",
+                "the manifest configuration's digest parameter, via a snapshot dependency"),
+        EnvName("CI_VERIFIED_MANIFEST_SHA256",
+                "the manifest digest the same run's verify stage passed; publish refuses "
+                "unless it equals CI_MANIFEST_SHA256 (ADR 0005 D6; empty until 0012 Story "
+                "04.0 Task 04 defines verify, so publish fails closed)",
+                "matrix.verified_manifest_sha256 (needs.verify.outputs."
+                "verified_manifest_sha256 via the stage workflow's input)",
+                "the verify configuration's output parameter, via a snapshot dependency"),
+        EnvName("CI_BUILD_BINARY_CACHE",
+                "JSON object leg -> binary_cache from the build job's outputs; a release-tier "
+                "destination cross-checks the manifest against it (RP-4, constraint 6)",
+                "matrix.binary_cache (ci.yml passes needs.build.outputs.binary_cache_<leg>)",
+                "the build configurations' binary-cache parameters"),
+        EnvName("CI_REPOSITORY", "owner/name of the repository a publish destination writes to",
+                "github.repository", "a literal parameter on the publish configuration"),
         EnvName("CI_WORKSPACE", "checkout root",
                 "github.workspace", "%teamcity.build.checkoutDir%"),
         EnvName("CI_TEMP_DIR", "per-run scratch directory",

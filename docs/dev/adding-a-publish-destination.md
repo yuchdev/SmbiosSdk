@@ -1,6 +1,6 @@
 # Adding a publish destination
 
-Design: [ADR 0005 D9](/docs/adr/0005-unified-build-package-publish-pipeline.md). Contract: SC5 in [milestone 0014's plan](/docs/roadmap/0014-ci-rework-from-scratch/plan.md). Status: specification; the code is built by [milestone 0012 Story 04.0 Task 05](/docs/roadmap/0012-package-manager-distribution/04.0-release-and-publish-automation/05-publish-destination-plugins.md).
+Design: [ADR 0005 D9](/docs/adr/0005-unified-build-package-publish-pipeline.md). Contract: SC5 in [milestone 0014's plan](/docs/roadmap/0014-ci-rework-from-scratch/plan.md). Status: specification; the code is built by [milestone 0012 Story 04.0 Task 05](/docs/roadmap/0012-package-manager-distribution/04.0-release-and-publish-automation/05-publish-destination-plugins.md). The first destination exists since Task 02: `github-release` is `scripts/ci/publish_github_release.py` (destination-neutral input checks in `scripts/ci/publish_inputs.py`), run as `stage.py publish --destination github-release --only draft|promote` or `--dry-run`. Its registry entry ships `enabled: false`. Task 05 moves it behind the `scripts/ci/destinations/` interface below.
 
 A destination is where verified artifacts go: a GitHub Release, the vcpkg registry, crates.io, PyPI, an S3 staging area. Adding one never changes the stage logic or the workflow shape.
 

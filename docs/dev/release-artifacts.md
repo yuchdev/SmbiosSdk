@@ -157,7 +157,8 @@ in a WinGet manifest traces back to the same single value.
       "sha256": "4c73cb7b…",
       "install_sha256": "0ad18bff…",
       "arch": "x64",
-      "glibc": "2.38"
+      "glibc": "2.38",
+      "binary_cache": "none"
     }
   ]
 }
@@ -171,12 +172,20 @@ in a WinGet manifest traces back to the same single value.
 | `install_sha256` | digest of the **installed tree before archiving** |
 | `arch` | CPU architecture of the shipped binary (`x64`, `arm64`; `+`-joined for a universal Mach-O). It is read from the binary, and the `package` stage refuses an archive whose binary does not match its leg name. Manifests from before this field existed (run `44074901424`) do not have it. |
 | `glibc` / `msvc` / `macos_min` | the platform floor, read from the built binary itself |
+| `binary_cache` | `none` when the build job built every vcpkg dependency from source (`VCPKG_BINARY_SOURCES=clear` and 0 packages restored in its configure log), else `restored`. It is the build job's own `binary_cache_<leg>` output, and a release publishes only legs that say `none` (threat model RP-4, CR-2). Manifests from before Story 04.0 Task 02 do not have it, and cannot be released. |
 
 `install_sha256` is the integrity link between stages: the `package`
 stage refuses to archive a tree whose digest differs from the one the
 build stage recorded after running the tests. It is what makes "the bytes
 we shipped are the bytes we tested" checkable rather than assumed, and it
 is verified on every leg of every run.
+
+Nothing downstream trusts a digest that travels inside an artifact, because
+any job of the run can replace an artifact (threat model RP-4). The package
+stage's manifest job therefore downloads each leg by artifact ID and checks
+its archive, `install_sha256` and `binary_cache` against the jobs that
+produced them, then exports `manifest_sha256`. The publish stage checks
+`manifest.json` against that job output before it parses it.
 
 ## Using an extracted archive
 

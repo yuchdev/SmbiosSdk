@@ -141,7 +141,46 @@ jobs:
     if: needs.plan.outputs.package != '[]'
     uses: ./.github/workflows/stage-package.yml
     with:
-      legs: ${{ format('[{{"leg":"linux-x64","install_sha256":{0},"artifact_id":"{1}"}},{{"leg":"windows-x64","install_sha256":{2},"artifact_id":"{3}"}},{{"leg":"macos-arm64","install_sha256":{4},"artifact_id":"{5}"}}]', needs.build.outputs.install_sha256_linux_x64, needs.build.outputs.install_artifact_linux_x64, needs.build.outputs.install_sha256_windows_x64, needs.build.outputs.install_artifact_windows_x64, needs.build.outputs.install_sha256_macos_arm64, needs.build.outputs.install_artifact_macos_arm64) }}
+      legs: ${{ format('[{{"leg":"linux-x64","install_sha256":{0},"artifact_id":"{1}","binary_cache":{6}}},{{"leg":"windows-x64","install_sha256":{2},"artifact_id":"{3}","binary_cache":{7}}},{{"leg":"macos-arm64","install_sha256":{4},"artifact_id":"{5}","binary_cache":{8}}}]', needs.build.outputs.install_sha256_linux_x64, needs.build.outputs.install_artifact_linux_x64, needs.build.outputs.install_sha256_windows_x64, needs.build.outputs.install_artifact_windows_x64, needs.build.outputs.install_sha256_macos_arm64, needs.build.outputs.install_artifact_macos_arm64, needs.build.outputs.binary_cache_linux_x64, needs.build.outputs.binary_cache_windows_x64, needs.build.outputs.binary_cache_macos_arm64) }}
+
+  # Milestone 0012 Story 04.0 (ADR 0005 D1/D6/D7): the verify stage. Its
+  # logic is Task 04; until then `stage.py verify` exits 2 and the plan's
+  # `verify` list is always [] (stage not defined), so this job is skipped.
+  # It downloads `dist` by artifact ID and is given the package stage's
+  # out-of-band manifest digest (threat model 2026-11-18 RP-4, constraint 4).
+  # Task 04 completes it, including the `verified_manifest_sha256` output
+  # the publish stage requires.
+  verify:
+    needs: [plan, package]
+    if: needs.plan.outputs.verify != '[]'
+    uses: ./.github/workflows/stage-verify.yml
+    with:
+      legs: ${{ needs.plan.outputs.verify }}
+      manifest_sha256: ${{ fromJSON(needs.package.outputs.manifest_sha256) }}
+      dist_artifact_id: ${{ needs.package.outputs.dist_artifact_id }}
+
+  # Milestone 0012 Story 04.0 Task 02 (ADR 0005 D6/D9): the release tier of the
+  # publish stage, the GitHub Release (release-draft, then release-promote).
+  # Reached only from a v* tag push (P12 tier clause), only after the same
+  # run's verify passed (needs: verify, and the implicit success() of a job
+  # that names no status function), and only when the plan has publish rows -
+  # which it never has while verify is not defined (plan.py; fail closed).
+  # Inputs are job outputs, never files inside an artifact (RP-4): the
+  # manifest digest and dist artifact ID from the package stage, each leg's
+  # binary_cache from the build job (cold-build cross-check, CR-2), and the
+  # manifest digest verify passed (empty until Task 04: publish refuses).
+  publish-release:
+    needs: [plan, build, package, verify]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.plan.outputs.publish != '[]'
+    # permissions: stage-publish.yml's release-draft and release-promote create, upload to and promote the GitHub Release; a called workflow's jobs cannot exceed this caller's grant (ADR 0005 D6).
+    permissions:
+      contents: write
+    uses: ./.github/workflows/stage-publish.yml
+    with:
+      manifest_sha256: ${{ fromJSON(needs.package.outputs.manifest_sha256) }}
+      dist_artifact_id: ${{ needs.package.outputs.dist_artifact_id }}
+      binary_cache: ${{ format('{{"linux-x64":{0},"windows-x64":{1},"macos-arm64":{2}}}', needs.build.outputs.binary_cache_linux_x64, needs.build.outputs.binary_cache_windows_x64, needs.build.outputs.binary_cache_macos_arm64) }}
+      verified_manifest_sha256: ${{ needs.verify.outputs.verified_manifest_sha256 }}
 
   # Story 04.0 Task 01 (plan E9): one run-level table of at most 40 lines
   # from the summary-<job>-<leg> artifacts every job uploads, and, when a

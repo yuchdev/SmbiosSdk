@@ -28,7 +28,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Publish
-        run: python3 scripts/ci/stage.py publish --tier staging --class oidc
+        run: python3 scripts/ci/stage.py publish --destination s3-staging
         timeout-minutes: 5
         env:
           CI_PUBLISH_S3_ROLE: ${{ secrets.S3_ROLE }}
@@ -49,7 +49,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Publish
-        run: python3 scripts/ci/stage.py publish --tier release --class repo-write
+        run: python3 scripts/ci/stage.py publish --destination github-release --only draft
         timeout-minutes: 5
         env:
           CI_PUBLISH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

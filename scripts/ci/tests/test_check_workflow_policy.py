@@ -32,6 +32,11 @@ from ci_test_support import CI_DIR, FIXTURES
 import check_workflow_policy as gate  # noqa: E402  (ci_test_support put scripts/ci on sys.path)
 
 WORKFLOW_FIXTURES = FIXTURES / "workflows"
+#: Empty publish registries: the default of a case without its own. Since
+#: milestone 0012 Story 04.0 Task 02 the repository's registries list real jobs
+#: of .github/workflows, which no fixture case contains.
+EMPTY_REGISTRY = FIXTURES / "publish_registry_empty"
+REAL_WORKFLOWS = CI_DIR.parents[1] / ".github" / "workflows"
 GOOD = WORKFLOW_FIXTURES / "good"
 COMBINED = WORKFLOW_FIXTURES / "combined"
 _CASE = re.compile(r"^(p[0-9]+)_")
@@ -48,9 +53,9 @@ def policy_for(case_dir: Path, **overrides: Path) -> gate.Policy:
 
     files = gate.PolicyFiles(
         actions_allowlist=pick("actions_allowlist.json", gate.PolicyFiles.actions_allowlist),
-        publish_jobs=pick("publish_jobs.json", gate.PolicyFiles.publish_jobs),
+        publish_jobs=pick("publish_jobs.json", EMPTY_REGISTRY / "publish_jobs.json"),
         publish_destinations=pick("publish_destinations.json",
-                                  gate.PolicyFiles.publish_destinations),
+                                  EMPTY_REGISTRY / "publish_destinations.json"),
         step_budgets=pick("step_budgets.json", gate.PolicyFiles.step_budgets),
         pins=pick("pins.json", gate.PolicyFiles.pins),
         destinations_dir=case_dir / "destinations")
@@ -64,8 +69,16 @@ def run_case(case_dir: Path, branch: Optional[str] = None, **overrides: Path
                          workflows_dir=case_dir, scripts_dir=None, branch=branch)
 
 
-def cli(args: List[str]) -> tuple:
-    """Run ``check_workflow_policy.main`` in-process; return (exit, stdout lines)."""
+def cli(args: List[str], real_registry: bool = False) -> tuple:
+    """Run ``check_workflow_policy.main`` in-process; return (exit, stdout lines).
+
+    Unless ``args`` name their own, or ``real_registry`` is set, the publish
+    registries are the empty ones (:data:`EMPTY_REGISTRY`), as in :func:`run_case`.
+    """
+    if not real_registry and "--publish-jobs" not in args:
+        args = ["--publish-jobs", str(EMPTY_REGISTRY / "publish_jobs.json"),
+                "--publish-destinations", str(EMPTY_REGISTRY / "publish_destinations.json"),
+                *args]
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         rc = gate.main(["--reporter", "plain", *args])
@@ -117,7 +130,10 @@ class OneViolationPerRule(unittest.TestCase):
                      "p10_pull_request_title", "p10_head_ref", "p13_github_script",
                      "p13_local_action", "p2_docker", "p14_checkout_persists_credentials",
                      "p15_cache_in_verify", "p15_logs_directory", "p15_logs_glob",
-                     "p15_upload_other_name_directory"):
+                     "p15_upload_other_name_directory",
+                     # 2026-11-18 threat model, constraints 1-2 (0012 Story 04.0 Task 02)
+                     "p12_publish_extra_step", "p12_publish_download_by_name",
+                     "p8_publish_secret_at_job_level"):
             self.assertTrue((WORKFLOW_FIXTURES / name).is_dir(), name)
 
     def test_SameRepoComparisonIsTheOnlyHeadRepoUse(self) -> None:
@@ -155,6 +171,39 @@ class OneViolationPerRule(unittest.TestCase):
                 self.assertIn(needle, violation.actual)
 
 
+class PublishJobShape(unittest.TestCase):
+    """Threat model 2026-11-18 constraints 1 and 2 as policy (0012 Story 04.0 Task 02).
+
+    Type: invalid input (one fixture per extra step kind and per credential
+    placement). On failure first check: ``_WorkflowCheck.publish_job_shape``.
+    """
+
+    def test_EachFixtureNamesItsViolation(self) -> None:
+        for name, rule, needle in (
+                ("p12_publish_extra_step", "P12", "stage.py verify"),
+                ("p12_publish_download_by_name", "P12", "name"),
+                ("p8_publish_secret_at_job_level", "P8", "job-level secrets reference")):
+            with self.subTest(case=name):
+                (violation,) = run_case(WORKFLOW_FIXTURES / name)
+                self.assertEqual(violation.rule, rule)
+                self.assertIn(needle, violation.actual)
+
+    def test_RealPublishWorkflowHasTheAllowedShapeOnly(self) -> None:
+        """Normal case: the shipped stage-publish.yml passes, and each job has one publish step."""
+        root = gate.load_yaml((REAL_WORKFLOWS / "stage-publish.yml").read_text(encoding="utf-8"))
+        self.assertEqual(sorted(root["jobs"]), ["release-draft", "release-promote"])
+        for job_id, job in root["jobs"].items():
+            with self.subTest(job=job_id):
+                runs = [str(st["run"]) for st in job["steps"] if "run" in st]
+                self.assertEqual(runs, [f"python3 scripts/ci/stage.py publish --destination "
+                                        f"github-release --only {job_id.split('-')[1]}"])
+                self.assertNotIn("env", {k: v for k, v in job.items()
+                                         if "secrets" in str(v)})
+        found = gate.check_workflow(REAL_WORKFLOWS / "stage-publish.yml",
+                                    gate.ALLOWED_WORKFLOW_FILES, gate.load_policy())
+        self.assertEqual([v.render() for v in found], [])
+
+
 class CompliantFixture(_TmpCase):
     """The compliant fixture set passes every rule (normal case)."""
 
@@ -172,14 +221,27 @@ class CompliantFixture(_TmpCase):
         self.assertTrue(lines[0].startswith("ok: workflow policy: 4 workflows"), lines)
 
     def test_RepositoryDataFilesPass(self) -> None:
-        """The shipped allowlist, publish registries, budgets and pins are themselves valid."""
-        found = gate.run_gate([], policy=gate.load_policy(), workflows_dir=self.tmp,
+        """The shipped allowlist, publish registries, budgets and pins are themselves valid.
+
+        The publish registries name jobs of the real workflows (P12 "listed
+        job exists"), so the real workflow directory is the one checked.
+        """
+        found = gate.run_gate([], policy=gate.load_policy(), workflows_dir=REAL_WORKFLOWS,
                               scripts_dir=None)
         self.assertEqual([v.render() for v in found], [])
 
     def test_OkLineFromRealDefaultsWithoutScripts(self) -> None:
-        rc, lines = cli(["--no-scripts", "--workflows-dir", str(self.tmp)])
+        rc, lines = cli(["--no-scripts", "--workflows-dir", str(REAL_WORKFLOWS)],
+                        real_registry=True)
         self.assertEqual((rc, len(lines)), (0, 1), lines)
+
+    def test_RepositoryRegistryAgainstAnEmptyDirectoryFailsClosed(self) -> None:
+        """Regression (Task 02): a listed publish job missing from the workflows is P12."""
+        found = gate.run_gate([], policy=gate.load_policy(), workflows_dir=self.tmp,
+                              scripts_dir=None)
+        self.assertTrue(found and {v.rule for v in found} == {"P12"},
+                        [v.render() for v in found])
+        self.assertTrue(all("missing" in v.actual for v in found))
 
 
 class BoundedOutput(unittest.TestCase):
@@ -480,7 +542,7 @@ class ProbeWorkflows(_TmpCase):
 
     def gate_dir(self, case: Path, branch: Optional[str]) -> List[str]:
         """Run the gate as lint.py does: nothing named, the directory scan finds the probe."""
-        found = gate.run_gate([], policy=gate.load_policy(), workflows_dir=case,
+        found = gate.run_gate([], policy=policy_for(case), workflows_dir=case,
                               scripts_dir=None, branch=branch)
         return [v.render() for v in found]
 
@@ -633,7 +695,12 @@ class ProbeWorkflows(_TmpCase):
         # stage-package.yml has no probe caller: the package stage never runs on a
         # branch push (ADR 0005 D7, stage.stage_selected) and needs the
         # install-<leg> artifacts of the same run's build stage (0012 Story 03.0).
-        no_probe = {"./.github/workflows/stage-package.yml"}
+        # Likewise stage-verify.yml and stage-publish.yml (0012 Story 04.0 Task
+        # 02): verify needs the same run's package stage, and publish is reachable
+        # only from a v* tag (P12); a probe caller of either must never exist.
+        no_probe = {"./.github/workflows/stage-package.yml",
+                    "./.github/workflows/stage-verify.yml",
+                    "./.github/workflows/stage-publish.yml"}
         self.assertEqual(used, {f"./.github/workflows/{p.name}" for p in
                                 (REPO_ROOT / ".github" / "workflows").glob("stage-*.yml")}
                          - no_probe)

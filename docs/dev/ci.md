@@ -13,7 +13,7 @@ plan -> lint -> build        (windows, macos, linux)
         all of them -> report (always runs)
 ```
 
-`plan` decides which legs run ([tier table](#triggers-concurrency-and-tiering-plan-e7)); `lint` gates the three build-type jobs (`needs: [lint, plan]`); `build`, `sanitizers` and `gui` are the reusable `stage-build.yml`, `stage-sanitizers.yml` and `stage-gui.yml`, one matrix leg per runner; `report` writes the one run-level table. Packaging stages (`package`, `verify`, `publish`) are declared in the plan. `package` (milestone 0012 Story 03.0) is the `package` job of `ci.yml` (`needs: [plan, build]`), calling `stage-package.yml`: one job per packaging leg plus a `manifest` job; `verify` and `publish` are not defined yet. A workflow step only calls `python3 scripts/ci/stage.py ...`; the logic lives in tested scripts under `scripts/ci/`.
+`plan` decides which legs run ([tier table](#triggers-concurrency-and-tiering-plan-e7)); `lint` gates the three build-type jobs (`needs: [lint, plan]`); `build`, `sanitizers` and `gui` are the reusable `stage-build.yml`, `stage-sanitizers.yml` and `stage-gui.yml`, one matrix leg per runner; `report` writes the one run-level table. Packaging stages (`package`, `verify`, `publish`) are declared in the plan. `package` (milestone 0012 Story 03.0) is the `package` job of `ci.yml` (`needs: [plan, build]`), calling `stage-package.yml`: one job per packaging leg plus a `manifest` job; `verify` is not defined yet (0012 Story 04.0 Task 04): `stage-verify.yml` is a placeholder whose job the plan never schedules. `publish` (Story 04.0 Task 02) is the `publish-release` job of `ci.yml` (`needs: [plan, build, package, verify]`, `v*` tag push only), calling `stage-publish.yml`: `release-draft`, then `release-promote`. It gets no plan row while `verify` is undefined, the `github-release` destination ships `enabled: false`, and `stage.py publish` refuses without the same run's verify result. Each of these three fails closed on its own. A workflow step only calls `python3 scripts/ci/stage.py ...`; the logic lives in tested scripts under `scripts/ci/`.
 
 **The five report contracts** (RC1-RC5, full text in [plan.md](/docs/roadmap/0014-ci-rework-from-scratch/plan.md#shared-contracts)):
 
@@ -126,7 +126,7 @@ Milestone 0012 stages (ADR 0005 extension). A stage not defined yet has the job 
 | `tag` (`v*`) | yes | yes | `release`-tier jobs only |
 | `push` to `master` | yes | yes | `staging`-tier jobs only |
 
-Publish rows come only from `scripts/ci/publish_jobs.json` (empty until 0012). There is no other path to `publish`; `CI_EVENT=manual` is rejected by the plan.
+Publish rows come only from `scripts/ci/publish_jobs.json` (`release-draft` and `release-promote` since 0012 Story 04.0 Task 02), and only while `verify` is defined: until then `publish` also shows `not run: stage not defined`. There is no other path to `publish`; `CI_EVENT=manual` is rejected by the plan.
 
 The plan sets the job outputs `build`, `sanitizers`, `gui`, `package`, `verify`, `publish` (JSON lists) and `plan` (the whole plan: per-leg and per-stage reasons, the pinned runner label of every scheduled leg), all through `Reporter.set_output()` (single-line JSON, random delimiter; CR-6/CR-8). `ci.yml` passes each leg list to its stage workflow as the `legs` input, whose matrix is `fromJSON(inputs.legs || '<full-tier legs>')`, and skips the job with `if: needs.plan.outputs.<job> != '[]'` (an empty matrix is an error). `lint` always runs. `CI_EVENT` (`push`/`pr`/`schedule`/`tag`), `CI_REF` (shape per event), `CI_BASE_COMMIT`/`CI_COMMIT` (hex SHA or allowlisted ref name) and `CI_PR_SAME_REPO` (`true`/`false`/empty) are re-validated; a value outside its allowlist or containing CR/LF exits 2 without being echoed and without setting any output. A tier leg that is not declared, pending, of an unknown job, or whose runner has no label in `scripts/ci/pins.json` also exits 2. `scripts/ci/tests/test_stage.py` checks that every stage workflow's fallback list is its job's full tier and that the plan's list for every `ci.yml` trigger equals the Q1 tier.
 
@@ -204,8 +204,10 @@ The gate reads these data files. A change to any of them is a reviewed one-line 
 | File | Rule | Holds |
 |------|------|-------|
 | `scripts/ci/actions_allowlist.json` | P13 | Every allowed `uses:` with SHA, version, justification, TeamCity equivalent and the date its tag commit was verified |
-| `scripts/ci/publish_jobs.json` | P8, P12 | The only jobs that may hold a publish permission or read a secret, and the callers of `stage-publish.yml`. Empty until milestone 0012. |
-| `scripts/ci/publish_destinations.json` | P12 | The publish destination registry (ADR 0005 D9). A placeholder owned by milestone 0012. |
+| `scripts/ci/publish_jobs.json` | P8, P12 | The only jobs that may hold a publish permission or read a secret, and the callers of `stage-publish.yml`: `release-draft`, `release-promote` and their caller `publish-release` (0012 Story 04.0 Task 02). |
+| `scripts/ci/publish_destinations.json` | P12 | The publish destination registry (ADR 0005 D9): `github-release`, shipped `enabled: false` until settings S-1..S-8 are read back. |
+
+For every job listed in `publish_jobs.json`, the gate also enforces the 2026-11-18 threat model's constraints 1 and 2. The steps may only be `actions/checkout`, `actions/download-artifact` with `artifact-ids:` (never `name:` or `pattern:`), and exactly one `python3 scripts/ci/stage.py publish --destination <name>` step (P12). A `secrets.` reference may appear only in that step's `env:`, under a `CI_PUBLISH_*` key (P8).
 | `scripts/ci/step_budgets.json` | P4 | Job time budgets (table below) |
 | `scripts/ci/pins.json` | P3 | Runner labels and tool versions (Story 02.0 Task 01) |
 

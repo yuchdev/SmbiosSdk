@@ -220,6 +220,39 @@ class DataValidationTests(unittest.TestCase):
             self.assertEqual(label, data.pins["runners"][data.legs["legs"][leg]["runner"]])
 
 
+class PublishGatingTests(unittest.TestCase):
+    """Type: unit. ADR 0005 D6 (0012 Story 04.0 Task 02): publish rows need a defined verify.
+
+    On failure first check: the ``publish`` branch in ``plan.matrix_for`` and
+    ``scripts/ci/publish_jobs.json``.
+    """
+
+    def data(self, defined) -> plan.PlanData:
+        base = plan.load_data()
+        return plan.PlanData(base.legs, base.pins, base.publish_jobs, frozenset(defined))
+
+    def test_RealDataHasNoPublishRowsWhileVerifyIsUndefined(self) -> None:
+        """Fail closed: publish is defined (stage.STEPS) but verify (Task 04) is not."""
+        base = plan.load_data()
+        self.assertIn("publish", base.defined_stages)
+        self.assertNotIn("verify", base.defined_stages)
+        for ref in ("refs/tags/v1.0.1", "refs/tags/v1.0.1-rc.1"):
+            with self.subTest(ref=ref):
+                result = plan.matrix_for("tag", ref, "full")
+                self.assertEqual(result["publish"], [])
+                self.assertEqual(result["stages"]["publish"], plan.NOT_RUN_UNDEFINED)
+
+    def test_WithVerifyDefinedATagGetsTheReleaseRowsOnly(self) -> None:
+        data = self.data({"package", "verify", "publish"})
+        rows = plan.matrix_for("tag", "refs/tags/v1.0.1", "full", data=data)["publish"]
+        self.assertEqual(rows, [{"job": "release-draft", "tier": "release"},
+                                {"job": "release-promote", "tier": "release"}])
+        for event, ref in (("push", "refs/heads/master"), ("pr", "refs/pull/3/merge"),
+                           ("schedule", "refs/heads/master"), ("push", "refs/heads/topic")):
+            with self.subTest(event=event, ref=ref):
+                self.assertEqual(plan.matrix_for(event, ref, "full", data=data)["publish"], [])
+
+
 class ParsePlanTests(unittest.TestCase):
     """Type: unit + invalid input. Scenario: the report reads ``CI_PLAN`` back."""
 

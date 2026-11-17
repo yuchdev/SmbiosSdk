@@ -25,7 +25,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 from unittest import mock
 
 from ci_test_support import CI_DIR, neutral_env, path_with, write_stub
@@ -41,7 +41,7 @@ WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 JOB_WORKFLOWS = {"build": "stage-build.yml", "sanitizers": "stage-sanitizers.yml",
                  "gui": "stage-gui.yml"}
 STAGE_WORKFLOWS = ("stage-lint.yml", "stage-build.yml", "stage-sanitizers.yml", "stage-gui.yml",
-                   "stage-package.yml")
+                   "stage-package.yml", "stage-verify.yml", "stage-publish.yml")
 POSIX_ONLY = "stub commands are /bin/sh trampolines (POSIX only)"
 
 
@@ -217,11 +217,17 @@ class InputValidationTests(unittest.TestCase):
 
     def test_UnknownAndUndefinedStagesExit2(self) -> None:
         self.assertUsage(run_stage_cli(self.tmp, ["deploy"]), "deploy")
-        for name in ("verify", "publish"):
-            with self.subTest(stage=name):
-                proc = run_stage_cli(self.tmp, [name])
+        # verify is 0012 Story 04.0 Task 04; publish is defined since Task 02.
+        proc = run_stage_cli(self.tmp, ["verify"])
+        self.assertUsage(proc)
+        self.assertIn("not defined yet", proc.stderr)
+
+    def test_PublishOnlyFlagsAreRejectedElsewhere(self) -> None:
+        for args in (["lint", "--dry-run"], ["build", "--destination", "github-release"]):
+            with self.subTest(args=args):
+                proc = run_stage_cli(self.tmp, args)
                 self.assertUsage(proc)
-                self.assertIn("not defined yet", proc.stderr)
+                self.assertIn("valid only with publish", proc.stderr)
 
     def test_InvalidEventAndRefExit2(self) -> None:
         self.assertUsage(run_stage_cli(self.tmp, ["lint", "--only", "versions"],
@@ -443,7 +449,53 @@ class LegsDataTests(unittest.TestCase):
                     self.assertRegex(body.strip(),
                                      r"^python3? scripts/ci/stage\.py ((lint|build|test)"
                                      r"( --only [a-z-]+)?|summary( --job-failed)?"
-                                     r"|package( --only manifest)?)$")
+                                     r"|package( --only manifest)?|verify"
+                                     r"|publish --destination [a-z0-9-]+ --only "
+                                     r"(preflight|draft|promote))$")
+
+
+class BinaryCacheStateTests(unittest.TestCase):
+    """Type: unit. Scenario: the build job's binary_cache_<leg> observation (threat model RP-4).
+
+    On failure first check: ``stage.binary_cache_state`` and
+    ``vcpkg_cache_report.parse_log`` (the log markers it needs).
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.log = Path(self._tmp.name) / "configure.log"
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def state(self, sources: Optional[str], text: Optional[str]) -> str:
+        if text is not None:
+            self.log.write_text(text, encoding="utf-8")
+        return stage.binary_cache_state(sources, self.log)
+
+    def test_ColdBuildIsNone(self) -> None:
+        cold = ("The following packages will be built and installed:\n"
+                "Building boost-iostreams:x64-linux@1.86.0...\n"
+                "All requested installations completed successfully in: 9 min\n")
+        self.assertEqual(self.state("clear", cold), "none")
+
+    def test_AnyRestoreOrOtherSourceIsRestored(self) -> None:
+        warm = "Restored 4 package(s) from /cache in 1 s.\n" \
+               "All requested installations completed successfully in: 2 s\n"
+        self.assertEqual(self.state("clear", warm), "restored")
+        cold = "The following packages will be built and installed:\nBuilding a:b@1\n"
+        for sources in ("clear;files,/c,readwrite", "", None, "Clear"):
+            with self.subTest(sources=sources):
+                self.assertEqual(self.state(sources, cold), "restored")
+
+    def test_UnreadableOrUnparseableLogFailsClosed(self) -> None:
+        """Edge: without proof of a cold build the value is restored (CR-2)."""
+        self.assertEqual(self.state("clear", None), "restored")          # no log at all
+        self.assertEqual(self.state("clear", "cmake output only\n"), "restored")
+
+    def test_OutputNameIsUniquePerLeg(self) -> None:
+        self.assertEqual(stage.binary_cache_output_name("macos-arm64"), "binary_cache_macos_arm64")
+        self.assertEqual(stage.archive_output_name("windows-x64"), "archive_sha256_windows_x64")
 
 
 class StepTests(unittest.TestCase):
@@ -968,7 +1020,16 @@ class RunStageTests(unittest.TestCase):
 
     def test_EveryStepHasAFunction(self) -> None:
         for name, steps in stage.STEPS.items():
+            if name == "publish":
+                continue  # not leg-based: run_publish dispatches to the destination module
             self.assertEqual(tuple(stage.STEP_FUNCTIONS[name]), steps)
+        import importlib
+        for module_name in stage.DESTINATION_MODULES.values():
+            module = importlib.import_module(module_name)
+            for phase in stage.STEPS["publish"][1:]:  # preflight is the module's two preflights
+                self.assertTrue(callable(getattr(module, phase, None)), (module_name, phase))
+            self.assertTrue(callable(module.settings_preflight))
+            self.assertTrue(callable(module.commit_preflight))
 
 
 class ToolsVenvTests(unittest.TestCase):

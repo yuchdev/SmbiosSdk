@@ -163,6 +163,15 @@ TIERS: Tuple[str, ...] = ("release", "staging")
 #: ``<version>.<major>.<minor>.<builddate><n>``) that no release trigger may match.
 LEGACY_TAG_SAMPLES: Tuple[str, ...] = ("1.0.2.202611131", "1.2.3.4")
 
+#: P12 (0012 Story 04.0 Task 02; threat model 2026-11-18 RP-2, constraint 1): the
+#: one run: line a publish job may hold. Its other steps may only be checkout and
+#: download-artifact by ``artifact-ids``.
+_PUBLISH_RUN = re.compile(r"^python3 scripts/ci/stage\.py publish --destination "
+                          r"[a-z0-9][a-z0-9-]{0,39}( --only [a-z]{1,20})?$")
+PUBLISH_STEP_ACTIONS: Tuple[str, ...] = ("actions/checkout", "actions/download-artifact")
+#: P8 (RP-8, constraint 2): the only env: keys of the publish step a secret may fill.
+PUBLISH_CREDENTIAL_PREFIX = "CI_PUBLISH_"
+
 #: P13: actions whose job a neutral script can do, or that evaluate code.
 DENIED_ACTIONS: Dict[str, str] = {
     "actions/github-script": "evaluates code from inputs",
@@ -1497,6 +1506,60 @@ class _WorkflowCheck:
         if not self.call_only and "verify" not in _needs(job):
             self.v(job_id, "P8", "needs: verify", ",".join(_needs(job)) or "none")
         self.tier_guard(job_id, "P8", tier, [job.get("if")])
+        self.publish_job_shape(job_id, job)
+
+    def publish_job_shape(self, job_id: str, job: YMap) -> None:
+        """Threat model 2026-11-18 constraints 1 and 2 for a listed publish job.
+
+        P12 (RP-2): the steps are only ``actions/checkout``,
+        ``actions/download-artifact`` with ``artifact-ids`` (never ``name`` or
+        ``pattern``), and exactly one ``python3 scripts/ci/stage.py publish
+        --destination <name>`` step - no toolchain, cache or extra command in
+        a credentialed job. P8 (RP-8): a ``secrets.`` reference appears only in
+        that step's ``env:``, under a ``CI_PUBLISH_*`` key - never at job level
+        or in any other step.
+        """
+        outside = {k: v for k, v in job.items() if k != "steps"}
+        if _uses_secrets(outside):
+            self.v(job_id, "P8", "secrets only in the publish step's env:",
+                   "job-level secrets reference")
+        runs = 0
+        for index, step in self.steps(job):
+            if not isinstance(step, dict):
+                continue
+            loc = f"{job_id}/{_step_label(step, index)}"
+            if "run" in step:
+                body = " ".join(str(step["run"]).split())
+                if _PUBLISH_RUN.fullmatch(body):
+                    runs += 1
+                else:
+                    self.v(loc, "P12", "only one stage.py publish --destination run: step",
+                           body[:60] or "empty")
+                env = step.get("env") if isinstance(step.get("env"), dict) else {}
+                for key, value in env.items():
+                    if _uses_secrets(value) and not str(key).startswith(PUBLISH_CREDENTIAL_PREFIX):
+                        self.v(loc, "P8", f"secrets only under {PUBLISH_CREDENTIAL_PREFIX}* env "
+                               "keys", key)
+                rest = {k: v for k, v in step.items() if k != "env"}
+                if _uses_secrets(rest):
+                    self.v(loc, "P8", "secrets only in the publish step's env:",
+                           "secrets reference outside env:")
+                continue
+            if _uses_secrets(step):
+                self.v(loc, "P8", "secrets only in the publish step's env:",
+                       "secrets reference in another step")
+            action = _action_name(str(step.get("uses", "")))
+            if action not in PUBLISH_STEP_ACTIONS:
+                self.v(loc, "P12", "publish job steps: checkout, download-artifact, one publish "
+                       "step", action or "unknown step")
+            elif action == "actions/download-artifact":
+                with_ = step.get("with") if isinstance(step.get("with"), dict) else {}
+                if "artifact-ids" not in with_ or "name" in with_ or "pattern" in with_:
+                    self.v(loc, "P12", "download-artifact by artifact-ids only",
+                           ",".join(sorted(k for k in with_ if k in ("name", "pattern")))
+                           or "no artifact-ids")
+        if runs != 1:
+            self.v(job_id, "P12", "exactly one stage.py publish --destination step", runs)
 
     def tier_guard(self, loc: str, rule: str, tier: str, conditions: List[Any]) -> None:
         allowed = TIER_EVENTS.get(tier)
