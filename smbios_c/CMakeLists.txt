@@ -113,6 +113,9 @@ generate_export_header(${TARGET}
 # only for a deliberate, documented C-API-level change going forward.
 set(SMBIOS_C_VERSION "1.0.0")
 
+# @ONLY is load-bearing: smbios_c.pc.in's relocatable prefix=${pcfiledir}/../..
+# must reach the installed file verbatim (without @ONLY CMake would expand
+# ${pcfiledir} to empty and write "prefix=/../..").
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/smbios_c.pc.in
     ${CMAKE_CURRENT_BINARY_DIR}/smbios_c.pc

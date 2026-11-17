@@ -32,7 +32,11 @@ itself (:func:`platform_meta`), so it describes the tested binary, not the
 packaging runner: the highest ``GLIBC_x.y`` symbol-version requirement of the
 ELF objects (``glibc``), the Mach-O minimum macOS (``macos_min``,
 ``LC_BUILD_VERSION``/``LC_VERSION_MIN_MACOSX``), or the PE linker version of
-the DLL (``msvc``, e.g. ``14.44``; the MSVC toolset's linker).
+the DLL (``msvc``, e.g. ``14.44``; the MSVC toolset's linker). The CPU
+architecture is read the same way (ELF ``e_machine``, Mach-O ``cputype`` of
+each slice, PE ``Machine``) and recorded as ``arch``; a binary whose
+architecture is not the leg's (``--leg macos-arm64`` on an x86_64 host builds
+x86_64) is **refused**, naming both (:func:`binary_arches`).
 
 Digests are computed once, here. ``verify`` and ``publish`` (Story 04.0) read
 them from ``manifest.json`` and refuse any mismatch (D4); they never recompute
@@ -88,7 +92,7 @@ COMMIT = re.compile(r"^(?:[0-9a-f]{40}|unknown)$")
 CONFIG = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,31}$")
 #: Manifest fields of one leg entry, in D4 order, plus the platform-minimum key per OS.
 LEG_FIELDS: Tuple[str, ...] = ("leg", "file", "sha256", "bytes", "config", "install_sha256",
-                               "files")
+                               "files", "arch")
 PLATFORM_KEYS: Dict[str, str] = {"linux": "glibc", "macos": "macos_min", "windows": "msvc"}
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _META_VALUE = re.compile(r"^[0-9A-Za-z._+-]{1,64}$")
@@ -421,6 +425,12 @@ _FAT_MAGIC_64 = 0xCAFEBABF
 _LC_BUILD_VERSION = 0x32
 _LC_VERSION_MIN_MACOSX = 0x24
 _PLATFORM_MACOS = 1
+#: Machine codes -> the leg architecture names of :data:`LEG` (``x64``, ``arm64``).
+_ELF_MACHINES: Dict[int, str] = {62: "x64", 183: "arm64"}
+_MACHO_CPUTYPES: Dict[int, str] = {0x01000007: "x64", 0x0100000C: "arm64"}
+_PE_MACHINES: Dict[int, str] = {0x8664: "x64", 0xAA64: "arm64"}
+#: An ``arch`` manifest value: one leg architecture, or several joined by ``+`` (universal).
+ARCH = re.compile(r"^(?:x64|arm64)(?:\+(?:x64|arm64))?$")
 #: Largest binary read for metadata (the installed libraries are a few MiB).
 _META_MAX_BYTES = 256 << 20
 
@@ -512,17 +522,60 @@ def pe_linker_version(data: bytes) -> Optional[Tuple[int, int]]:
     return major, minor
 
 
+def binary_arches(data: bytes) -> Optional[Tuple[str, ...]]:
+    """Return the sorted CPU architectures of an ELF, Mach-O (thin or universal) or PE image.
+
+    Names are the leg's (``x64``, ``arm64``); a machine code outside those is
+    ``other``. ``None`` when ``data`` is none of the three formats or truncated.
+    """
+    if data.startswith(b"\x7fELF") and len(data) >= 20:
+        order = "<" if data[5] == 1 else ">"
+        (machine,) = struct.unpack_from(order + "H", data, 18)
+        return (_ELF_MACHINES.get(machine, "other"),)
+    if len(data) >= 0x40 and data[:2] == b"MZ":
+        (pe,) = struct.unpack_from("<I", data, 0x3C)
+        if pe + 6 > len(data) or data[pe:pe + 4] != b"PE\x00\x00":
+            return None
+        (machine,) = struct.unpack_from("<H", data, pe + 4)
+        return (_PE_MACHINES.get(machine, "other"),)
+    if len(data) < 8:
+        return None
+    (fat,) = struct.unpack_from(">I", data, 0)
+    if fat in (_FAT_MAGIC, _FAT_MAGIC_64):
+        (count,) = struct.unpack_from(">I", data, 4)
+        size = 32 if fat == _FAT_MAGIC_64 else 20
+        found = set()
+        for i in range(min(count, 32)):
+            at = 8 + i * size
+            if at + 4 > len(data):
+                return None
+            (cputype,) = struct.unpack_from(">I", data, at)
+            found.add(_MACHO_CPUTYPES.get(cputype, "other"))
+        return tuple(sorted(found)) if found else None
+    (magic,) = struct.unpack_from("<I", data, 0)
+    if magic in (_MH_MAGIC_64, _MH_MAGIC):
+        (cputype,) = struct.unpack_from("<I", data, 4)
+        return (_MACHO_CPUTYPES.get(cputype, "other"),)
+    return None
+
+
 def _version_text(parts: Sequence[int], keep: int = 2) -> str:
     shown = list(parts[:keep]) + [p for p in parts[keep:] if p]
     return ".".join(str(p) for p in shown)
 
 
-def platform_meta(src: Path, os_name: str) -> Dict[str, str]:
-    """Return ``{glibc|macos_min|msvc: <version>}`` read from the installed ``smbios_c`` library.
+def platform_meta(src: Path, leg: str) -> Dict[str, str]:
+    """Return ``{glibc|macos_min|msvc: <version>, arch: <arch>}`` read from the installed ``smbios_c``.
+
+    ``arch`` is the library's own CPU architecture (``+``-joined for a
+    universal Mach-O), and it must include ``leg``'s: a tree built for another
+    architecture than the leg names is never packaged under that name.
 
     Raises:
-        ArchiveError: The library is missing or no version could be read from it.
+        ArchiveError: The library is missing; no version or architecture could
+            be read from it; or its architecture is not the leg's (both named).
     """
+    os_name = leg_os(leg)
     lib = {"linux": "lib/libsmbios_c.so", "macos": "lib/libsmbios_c.dylib",
            "windows": "bin/smbios_c.dll"}[os_name]
     path = src.joinpath(*lib.split("/"))
@@ -541,7 +594,14 @@ def platform_meta(src: Path, os_name: str) -> Dict[str, str]:
         value = f"{found[0]}.{found[1]:02d}" if found else None
     if value is None:
         raise ArchiveError(f"cannot read the {key} requirement from {lib}")
-    return {key: value}
+    arches = binary_arches(data)
+    if not arches:
+        raise ArchiveError(f"cannot read the CPU architecture of {lib}")
+    want = leg.split("-", 1)[1]
+    if want not in arches:
+        raise ArchiveError(f"architecture mismatch: {lib} is built for {'+'.join(arches)}, "
+                           f"but the leg {leg} is {want}")
+    return {key: value, "arch": "+".join(arches)}
 
 
 # ---------------------------------------------------------------------------
@@ -584,8 +644,9 @@ def read_manifest(manifest: Path) -> Dict[str, object]:
 def update_manifest(manifest: Path, leg: str, archive: Path, meta: Mapping[str, str]) -> None:
     """Merge ``leg``'s entry into ``manifest`` (ADR 0005 D4), creating the file if needed.
 
-    ``meta`` must hold ``version``, ``commit``, ``config``, ``install_sha256``
-    and ``files``, and the platform key of the leg's OS
+    ``meta`` must hold ``version``, ``commit``, ``config``, ``install_sha256``,
+    ``files`` and ``arch`` (which must include the leg's architecture), and
+    the platform key of the leg's OS
     (:data:`PLATFORM_KEYS`); it may hold ``sha256`` (the archive digest already
     computed by the caller, so it is computed once). Otherwise the digest is
     computed here. The entry of the same leg is replaced (a re-run); every
@@ -601,14 +662,16 @@ def update_manifest(manifest: Path, leg: str, archive: Path, meta: Mapping[str, 
     """
     os_name = leg_os(leg)
     platform_key = PLATFORM_KEYS[os_name]
-    for key in ("version", "commit", "config", "install_sha256", "files", platform_key):
+    for key in ("version", "commit", "config", "install_sha256", "files", "arch", platform_key):
         if not isinstance(meta.get(key), str):
             raise ArchiveError(f"manifest metadata lacks {key}")
     checks = {"version": VERSION, "commit": COMMIT, "config": CONFIG, "install_sha256": _HEX64,
-              "files": re.compile(r"^\d{1,9}$"), platform_key: _META_VALUE}
+              "files": re.compile(r"^\d{1,9}$"), "arch": ARCH, platform_key: _META_VALUE}
     for key, rx in checks.items():
         if not rx.match(meta[key]):
             raise ArchiveError(f"manifest metadata {key} is malformed")
+    if leg.split("-", 1)[1] not in meta["arch"].split("+"):
+        raise ArchiveError(f"manifest metadata arch {meta['arch']} is not the leg {leg}'s")
     if archive.name != archive_name(meta["version"], leg):
         raise ArchiveError("archive name does not match libbios-<version>-<leg>.<ext>")
     if archive.is_symlink() or not archive.is_file():
@@ -626,7 +689,7 @@ def update_manifest(manifest: Path, leg: str, archive: Path, meta: Mapping[str, 
     entry: Dict[str, object] = {
         "leg": leg, "file": archive.name, "sha256": digest, "bytes": archive.stat().st_size,
         "config": meta["config"], "install_sha256": meta["install_sha256"],
-        "files": int(meta["files"]), platform_key: meta[platform_key],
+        "files": int(meta["files"]), "arch": meta["arch"], platform_key: meta[platform_key],
     }
     legs = [e for e in data["legs"] if e.get("leg") != leg] + [entry]  # type: ignore[union-attr]
     data["legs"] = sorted(legs, key=lambda e: str(e["leg"]))
@@ -652,7 +715,9 @@ def leg_entry(manifest: Path) -> Tuple[str, str, Dict[str, object]]:
     leg = entry.get("leg")
     if not (isinstance(leg, str) and LEG.match(leg)
             and entry.get("file") == archive_name(version, leg)
-            and isinstance(entry.get("sha256"), str) and _HEX64.match(entry["sha256"])):
+            and isinstance(entry.get("sha256"), str) and _HEX64.match(entry["sha256"])
+            and isinstance(entry.get("arch"), str) and ARCH.match(entry["arch"])
+            and leg.split("-", 1)[1] in entry["arch"].split("+")):
         raise ArchiveError(f"{MANIFEST_NAME} part has a malformed leg entry")
     return version, commit, entry
 

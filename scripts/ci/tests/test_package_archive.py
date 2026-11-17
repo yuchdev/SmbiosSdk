@@ -44,29 +44,30 @@ STAGE = CI_DIR / "stage.py"
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
 
-def fake_elf(glibc: List[str]) -> bytes:
-    """An ELF-magic blob whose string table names the given ``GLIBC_x.y`` versions."""
-    return b"\x7fELF\x02\x01\x01" + b"\x00" * 9 + b"".join(
+def fake_elf(glibc: List[str], machine: int = 62) -> bytes:
+    """An ELF-magic blob (``e_machine`` 62 = x86_64) naming the given ``GLIBC_x.y`` versions."""
+    return b"\x7fELF\x02\x01\x01" + b"\x00" * 9 + struct.pack("<HH", 3, machine) + b"".join(
         f"GLIBC_{v}".encode() + b"\x00" for v in glibc) + b"libc.so.6\x00"
 
 
-def fake_macho(minos: tuple, *, legacy: bool = False) -> bytes:
-    """A thin 64-bit Mach-O header with one LC_BUILD_VERSION (or LC_VERSION_MIN_MACOSX)."""
+def fake_macho(minos: tuple, *, legacy: bool = False, cputype: int = 0x0100000C) -> bytes:
+    """A thin 64-bit Mach-O header (arm64 by default) with one LC_BUILD_VERSION (or legacy)."""
     packed = (minos[0] << 16) | (minos[1] << 8) | minos[2]
     if legacy:
         cmd = struct.pack("<IIII", 0x24, 16, packed, packed)
     else:
         cmd = struct.pack("<IIIIII", 0x32, 24, 1, packed, packed, 0)
-    header = struct.pack("<IiiIIIII", 0xFEEDFACF, 0x0100000C, 0, 6, 1, len(cmd), 0, 0)
+    header = struct.pack("<IiiIIIII", 0xFEEDFACF, cputype, 0, 6, 1, len(cmd), 0, 0)
     return header + cmd + b"\x00" * 64
 
 
-def fake_pe(major: int, minor: int) -> bytes:
-    """A minimal PE image: MZ stub, PE signature, COFF header, optional-header linker version."""
+def fake_pe(major: int, minor: int, machine: int = 0x8664) -> bytes:
+    """A minimal PE image: MZ stub, PE signature, COFF Machine (x64), linker version."""
     data = bytearray(0x200)
     data[0:2] = b"MZ"
     struct.pack_into("<I", data, 0x3C, 0x80)
     data[0x80:0x84] = b"PE\x00\x00"
+    struct.pack_into("<H", data, 0x84, machine)
     struct.pack_into("<HBB", data, 0x80 + 24, 0x20B, major, minor)
     return bytes(data)
 
@@ -226,8 +227,9 @@ class ManifestTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def meta(self, os_key: str, value: str, **extra: str) -> Dict[str, str]:
+        arch = {"glibc": "x64", "msvc": "x64", "macos_min": "arm64"}[os_key]
         base = {"version": "1.0.0", "commit": COMMIT, "config": "Release",
-                "install_sha256": "a" * 64, "files": "42", os_key: value}
+                "install_sha256": "a" * 64, "files": "42", "arch": arch, os_key: value}
         base.update(extra)
         return base
 
@@ -246,7 +248,8 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(entry, {"leg": "linux-x64", "file": archive.name,
                                  "sha256": hashlib.sha256(b"linux archive bytes").hexdigest(),
                                  "bytes": len(b"linux archive bytes"), "config": "Release",
-                                 "install_sha256": "a" * 64, "files": 42, "glibc": "2.34"})
+                                 "install_sha256": "a" * 64, "files": 42, "arch": "x64",
+                                 "glibc": "2.34"})
 
     def test_LegsMergeSortedAndAReRunReplacesItsLeg(self) -> None:
         mac = self.archive("macos-arm64", b"mac")
@@ -285,7 +288,10 @@ class ManifestTests(unittest.TestCase):
         cases = [self.meta("macos_min", "13.0"),                  # wrong platform key
                  self.meta("glibc", "2.34", config="Rel;ease"),
                  self.meta("glibc", "2.34", commit="HEAD"),
-                 self.meta("glibc", "2.34", version="2.0.0")]     # name says 1.0.0
+                 self.meta("glibc", "2.34", version="2.0.0"),     # name says 1.0.0
+                 self.meta("glibc", "2.34", arch="arm64"),        # leg says x64
+                 self.meta("glibc", "2.34", arch="x86_64"),       # not a leg arch name
+                 {k: v for k, v in self.meta("glibc", "2.34").items() if k != "arch"}]
         for meta in cases:
             with self.subTest(meta=meta), self.assertRaises(pa.ArchiveError):
                 pa.update_manifest(self.manifest, "linux-x64", archive, meta)
@@ -384,19 +390,69 @@ class PlatformMetaTests(unittest.TestCase):
 
     def test_PlatformMetaPerOs(self) -> None:
         with tempfile.TemporaryDirectory() as name:
-            for os_name, want in (("linux", {"glibc": "2.34"}),
-                                  ("macos", {"macos_min": "13.0"}),
-                                  ("windows", {"msvc": "14.44"})):
-                with self.subTest(os=os_name):
-                    root = make_tree(Path(name) / os_name, os_name)
-                    self.assertEqual(pa.platform_meta(root, os_name), want)
+            for leg, want in (("linux-x64", {"glibc": "2.34", "arch": "x64"}),
+                              ("macos-arm64", {"macos_min": "13.0", "arch": "arm64"}),
+                              ("windows-x64", {"msvc": "14.44", "arch": "x64"})):
+                with self.subTest(leg=leg):
+                    root = make_tree(Path(name) / leg, pa.leg_os(leg))
+                    self.assertEqual(pa.platform_meta(root, leg), want)
 
     def test_UnreadableLibraryFailsLoudly(self) -> None:
         with tempfile.TemporaryDirectory() as name:
             root = make_tree(Path(name) / "t", "macos")
             (root / "lib" / "libsmbios_c.dylib").write_bytes(b"not a mach-o")
             with self.assertRaisesRegex(pa.ArchiveError, "macos_min"):
-                pa.platform_meta(root, "macos")
+                pa.platform_meta(root, "macos-arm64")
+
+    def test_ArchitectureReadFromEachFormat(self) -> None:
+        self.assertEqual(pa.binary_arches(fake_elf(["2.17"])), ("x64",))
+        self.assertEqual(pa.binary_arches(fake_elf(["2.17"], machine=183)), ("arm64",))
+        self.assertEqual(pa.binary_arches(fake_elf(["2.17"], machine=8)), ("other",))
+        self.assertEqual(pa.binary_arches(fake_macho((13, 0, 0))), ("arm64",))
+        self.assertEqual(pa.binary_arches(fake_macho((13, 0, 0), cputype=0x01000007)),
+                         ("x64",))
+        self.assertEqual(pa.binary_arches(fake_pe(14, 44)), ("x64",))
+        self.assertEqual(pa.binary_arches(fake_pe(14, 44, machine=0xAA64)), ("arm64",))
+        self.assertIsNone(pa.binary_arches(b"junk"))
+        self.assertIsNone(pa.binary_arches(b"MZ" + b"\xff" * 100))
+
+    def test_UniversalBinaryListsEverySlice(self) -> None:
+        head = struct.pack(">II", 0xCAFEBABE, 2)
+        head += struct.pack(">IIIII", 0x0100000C, 0, 0, 0, 0)
+        head += struct.pack(">IIIII", 0x01000007, 3, 0, 0, 0)
+        self.assertEqual(pa.binary_arches(head), ("arm64", "x64"))
+        with tempfile.TemporaryDirectory() as name:
+            root = make_tree(Path(name) / "t", "macos")
+            a = fake_macho((11, 0, 0))
+            off = 8 + 2 * 20
+            fat = struct.pack(">II", 0xCAFEBABE, 2)
+            fat += struct.pack(">IIIII", 0x0100000C, 0, off, len(a), 0)
+            fat += struct.pack(">IIIII", 0x01000007, 3, off, len(a), 0)
+            (root / "lib" / "libsmbios_c.dylib").write_bytes(fat + a)
+            self.assertEqual(pa.platform_meta(root, "macos-x64")["arch"], "arm64+x64")
+
+    def test_ArchitectureMismatchWithTheLegFailsNamingBoth(self) -> None:
+        """Regression: --leg macos-arm64 on an x86_64 host packaged x86_64 binaries."""
+        cases = (("macos-arm64", "lib/libsmbios_c.dylib",
+                  fake_macho((12, 7, 0), cputype=0x01000007), "x64"),
+                 ("linux-x64", "lib/libsmbios_c.so", fake_elf(["2.34"], machine=183), "arm64"),
+                 ("windows-arm64", "bin/smbios_c.dll", fake_pe(14, 44), "x64"))
+        for leg, lib, data, built in cases:
+            with self.subTest(leg=leg), tempfile.TemporaryDirectory() as name:
+                root = make_tree(Path(name) / "t", pa.leg_os(leg))
+                root.joinpath(*lib.split("/")).write_bytes(data)
+                with self.assertRaises(pa.ArchiveError) as cm:
+                    pa.platform_meta(root, leg)
+                text = str(cm.exception)
+                self.assertIn(f"built for {built}", text)
+                self.assertIn(f"leg {leg} is {leg.split('-')[1]}", text)
+
+    def test_UnreadableArchitectureFailsLoudly(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            root = make_tree(Path(name) / "t", "linux")
+            (root / "lib" / "libsmbios_c.so").write_bytes(b"\x7fELF\x02\x01\x01GLIBC_2.34\x00")
+            with self.assertRaisesRegex(pa.ArchiveError, "CPU architecture"):
+                pa.platform_meta(root, "linux-x64")
 
 
 def run_package(tmp: Path, args: List[str], **extra: str) -> subprocess.CompletedProcess:
@@ -440,6 +496,18 @@ class PackageStageTests(unittest.TestCase):
         self.assertEqual(len(self.rc1(proc.stdout + proc.stderr)), 1, proc.stdout + proc.stderr)
         self.assertNotIn("stage.py: error:", proc.stderr)
 
+    def test_ArchitectureMismatchFailsTheStageNamingBoth(self) -> None:
+        """Regression: an x86_64 host's tree packaged as ``--leg macos-arm64`` is refused."""
+        tree = make_tree(self.tmp / "artifacts" / "install" / "macos-arm64", "macos")
+        (tree / "lib" / "libsmbios_c.dylib").write_bytes(
+            fake_macho((12, 7, 0), cputype=0x01000007))
+        proc = run_package(self.tmp, ["--leg", "macos-arm64"])
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("lib/libsmbios_c.dylib is built for x64, but the leg macos-arm64 is arm64",
+                      proc.stdout)
+        dist = self.tmp / "artifacts" / "dist"
+        self.assertEqual(list(dist.glob("libbios-*")) if dist.exists() else [], [])
+
     def test_PackagesAllThreeLegsIntoOneManifest(self) -> None:
         for leg in ("linux-x64", "windows-x64", "macos-arm64"):
             make_tree(self.tmp / "artifacts" / "install" / leg, pa.leg_os(leg))
@@ -448,7 +516,8 @@ class PackageStageTests(unittest.TestCase):
             (ok,) = [ln for ln in proc.stdout.splitlines() if ln.startswith("ok: package ")]
             self.assertRegex(ok, rf"^ok: package {leg}: libbios-\d+\.\d+\.\d+-{leg}\."
                                  r"(tar\.gz|zip), \d+ files, \d+ bytes, sha256 [0-9a-f]{16}, "
-                                 r"Release, (glibc 2\.34|msvc 14\.44|macos_min 13\.0) ")
+                                 r"Release, (glibc 2\.34|msvc 14\.44|macos_min 13\.0), "
+                                 r"(x64|arm64) ")
         dist = self.tmp / "artifacts" / "dist"
         manifest = json.loads((dist / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["commit"], COMMIT)
@@ -460,6 +529,7 @@ class PackageStageTests(unittest.TestCase):
                 self.assertEqual(entry["sha256"], hashlib.sha256(archive.read_bytes()).hexdigest())
                 self.assertEqual(entry["bytes"], archive.stat().st_size)
                 self.assertEqual(entry["config"], "Release")
+                self.assertEqual(entry["arch"], entry["leg"].split("-")[1])
                 self.assertEqual((dist / (entry["file"] + ".sha256")).read_text(),
                                  f"{entry['sha256']}  {entry['file']}\n")
                 self.assertTrue(entry["file"].endswith(
@@ -683,6 +753,21 @@ class ManifestMergeTests(unittest.TestCase):
         proc = run_package(self.tmp, ["--leg", "linux-x64", "--only", "manifest"])
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
         self.assertIn("digest differs from its part's manifest entry", proc.stdout)
+
+    def test_PartWithoutAMatchingArchIsRefused(self) -> None:
+        part = self.art / "parts" / "dist-linux-x64" / "manifest.json"
+        original = part.read_text(encoding="utf-8")
+        for arch in (None, "arm64"):
+            with self.subTest(arch=arch):
+                data = json.loads(original)
+                if arch is None:
+                    del data["legs"][0]["arch"]
+                else:
+                    data["legs"][0]["arch"] = arch
+                part.write_text(json.dumps(data), encoding="utf-8")
+                proc = run_package(self.tmp, ["--leg", "linux-x64", "--only", "manifest"])
+                self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                self.assertIn("malformed leg entry", proc.stdout)
 
     def test_MissingLegPartIsRefused(self) -> None:
         import shutil

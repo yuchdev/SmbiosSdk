@@ -1222,7 +1222,7 @@ def step_archive(ctx: Context) -> int:
     try:
         os_name = pa.leg_os(leg)
         pa.check_contents(src, os_name)
-        meta = pa.platform_meta(src, os_name)
+        meta = pa.platform_meta(src, leg)
         archive = pa.archive_tree(src, dist / pa.archive_name(version, leg),
                                   pa.archive_format(leg))
         sha = pa.sha256_file(archive)
@@ -1236,9 +1236,9 @@ def step_archive(ctx: Context) -> int:
     ctx.reporter.set_output("version", version)
     ctx.reporter.set_output("archive_ext", pa.archive_format(leg))
     ctx.reporter.set_output("package_digest", {"leg": leg, "file": archive.name, "sha256": sha})
-    key, value = next(iter(meta.items()))
+    key = pa.PLATFORM_KEYS[os_name]
     summary = (f"{archive.name}, {count} files, {archive.stat().st_size} bytes, "
-               f"sha256 {sha[:16]}, {config}, {key} {value}")
+               f"sha256 {sha[:16]}, {config}, {key} {meta[key]}, {meta['arch']}")
     elapsed = round(time.monotonic() - start, 1)
     ctx.emit(ctx.reporter.step_ok(label, summary, elapsed))
     ci_step.append_record(ci_step.StepResult(label, "hard", "ok", 0, elapsed, summary, None,
