@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "about": "Log-size baseline of the old ci.yml (milestone 0014 Story 01.0 Task 01, recorded in status.md 2026-11-12/13). Read by log_budget.py (Story 03.0 Task 04): a green job of the new workflow must log fewer total bytes than the baseline job it replaces. 'jobs' is keyed by the old workflow's job name; 'leg_map' maps a new leg (the '(<leg>)' suffix of a ci-next.yml job name) to the old job it replaces. Lint is new and has no baseline. Numbers only; no log content. 'failing_run' is the retained failing run whose gui-build legs logged the given ranges (not split per leg in status.md).",
+  "about": "Log-size baseline of the old ci.yml (milestone 0014 Story 01.0 Task 01, recorded in status.md 2026-11-12/13). Read by log_budget.py (Story 03.0 Task 04): a green job of the new workflow must log fewer total bytes than the baseline job it replaces. 'jobs' is keyed by the old workflow's job name; 'leg_map' maps a new leg (the '(<leg>)' suffix of a ci-next.yml job name) to the old job it replaces. Lint is new and has no baseline. Numbers only; no log content. 'failing_run' is the retained failing run whose gui-build legs logged the given ranges (not split per leg in status.md). The packaging legs (linux-x64, windows-x64, macos-arm64; milestone 0012 Story 03.0) replace no old job; each maps to the old build job of its OS, whose steps it runs plus one install line.",
   "green_run": 43169714193,
   "jobs": {
     "sanitizers (ubuntu-latest)": {"bytes": 433751, "lines": 2611, "duration_s": 332},
@@ -20,7 +20,10 @@
     "macos-asan": "sanitizers (macos-latest)",
     "linux-gui": "gui-build (ubuntu-24.04)",
     "macos-gui": "gui-build (macos-latest)",
-    "windows-gui": "gui-build (windows-latest)"
+    "windows-gui": "gui-build (windows-latest)",
+    "linux-x64": "build (ubuntu-latest)",
+    "windows-x64": "build (windows-latest)",
+    "macos-arm64": "build (macos-latest)"
   },
   "failing_run": {
     "run": 43067987979,

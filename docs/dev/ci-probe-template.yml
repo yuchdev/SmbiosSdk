@@ -63,6 +63,8 @@
 #     uses: ./.github/workflows/stage-lint.yml
 #
 # (stage-lint.yml takes no inputs: it always runs its one Linux leg.)
+# stage-package.yml has no probe caller: the package stage never runs on a
+# branch push (ADR 0005 D7) and needs the same run's install-<leg> artifacts.
 # ---------------------------------------------------------------------------
 name: probe
 

@@ -92,6 +92,13 @@ NAMES: Dict[str, EnvName] = {
                 "job id", "build configuration id"),
         EnvName("CI_LEG", "leg (linux-x64, ...)",
                 "matrix value", "DSL parameter"),
+        EnvName("CI_INSTALL_SHA256",
+                "the build job's install-tree digest of this packaging leg, which the package "
+                "stage requires its unpacked hand-off to equal (milestone 0012 Story 03.0; "
+                "threat model CR-8)",
+                "matrix.install_sha256 (ci.yml passes needs.build.outputs."
+                "install_sha256_<leg> into stage-package.yml's matrix)",
+                "the build configuration's install digest parameter, via a snapshot dependency"),
         EnvName("CI_WORKSPACE", "checkout root",
                 "github.workspace", "%teamcity.build.checkoutDir%"),
         EnvName("CI_TEMP_DIR", "per-run scratch directory",

@@ -40,7 +40,9 @@ from reporters import get_reporter  # noqa: E402
 SCRIPT = CI_DIR / "classify_changes.py"
 HAVE_GIT = shutil.which("git") is not None
 LEGS = plan.load_data().legs
-FULL_BUILD = ["linux", "windows", "macos"]
+#: The build job's full-tier legs: the three plain legs, then the packaging legs
+#: (milestone 0012 Story 03.0; tiers.full only, ADR 0005 D7).
+FULL_BUILD = ["linux", "windows", "macos", "linux-x64", "windows-x64", "macos-arm64"]
 FULL_SAN = ["linux-asan", "macos-asan"]
 FULL_GUI = ["linux-gui", "windows-gui", "macos-gui"]
 
@@ -341,12 +343,16 @@ class TierTableTests(unittest.TestCase):
 
     def test_SameRepoPrRunsOnlyWhatThePushTierDidNot(self) -> None:
         result = plan.matrix_for("pr", "refs/pull/3/merge", "full", pr_same_repo=True)
-        self.assertEqual(self.jobs(result), {"lint": ["linux"], "build": ["windows", "macos"],
+        # ADR 0005 D7: a same-repo PR also builds the packaging legs (its push run
+        # never does), so package needs no other run's artifacts.
+        self.assertEqual(self.jobs(result), {"lint": ["linux"],
+                                             "build": ["windows", "macos", "linux-x64",
+                                                       "windows-x64", "macos-arm64"],
                                              "sanitizers": ["macos-asan"],
                                              "gui": ["windows-gui", "macos-gui"]})
         covered = {leg for leg, r in result["legs"].items() if r == plan.NOT_RUN_COVERED}
         self.assertEqual(covered, set(LEGS["tiers"]["push_branch"]))
-        self.assertEqual(result["stages"], {"package": plan.NOT_RUN_UNDEFINED,
+        self.assertEqual(result["stages"], {"package": plan.RUN,
                                             "verify": plan.NOT_RUN_UNDEFINED,
                                             "publish": plan.NOT_RUN_TIER})
 
@@ -371,7 +377,8 @@ class TierTableTests(unittest.TestCase):
                                                      "sanitizers": FULL_SAN, "gui": FULL_GUI})
                 self.assertEqual(set(result["legs"].values()), {plan.RUN})
                 self.assertEqual(set(result["runners"]), set(LEGS["tiers"]["full"]))
-                self.assertEqual(result["stages"]["package"], plan.NOT_RUN_UNDEFINED)
+                self.assertEqual(result["stages"]["package"], plan.RUN)
+                self.assertEqual(result["package"], ["linux-x64", "windows-x64", "macos-arm64"])
 
     def test_PublishIsTierOnlyOnTagAndMasterPush(self) -> None:
         cases = {("tag", "refs/tags/v1.0.0"): plan.NOT_RUN_UNDEFINED,

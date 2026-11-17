@@ -12,8 +12,11 @@ model CR-6/CR-8: single-line JSON, random per-call delimiter):
     the ``legs`` input (``fromJSON`` there) and skips the job with ``if:`` when
     the list is ``[]`` (an empty matrix is an error on the platform).
 ``package``, ``verify``, ``publish``
-    Milestone 0012's stages. Until they are defined these are ``[]`` and the
-    plan says ``not run: stage not defined`` for them. ``publish`` rows come
+    Milestone 0012's stages. ``package`` (Story 03.0) lists the packaging legs
+    on every full-classified event but a branch push (ADR 0005 D7; the same
+    events whose ``build`` list holds those legs, from ``tiers.full``). Until a
+    stage is defined its list is ``[]`` and the plan says ``not run: stage not
+    defined`` for it. ``publish`` rows come
     only from ``scripts/ci/publish_jobs.json``: ``release``-tier jobs on a
     ``tag`` event, ``staging``-tier jobs on a push to ``refs/heads/master``,
     nothing on any other event.
@@ -35,6 +38,11 @@ same-repo PR                   yes   windows, macos   macos-asan       windows-g
 fork PR, master push, v* tag,  yes   3 OS             linux-asan,      3 OS
 nightly                                               macos-asan
 =============================  ====  ===============  ===============  ======================
+
+The packaging legs (``linux-x64``, ``windows-x64``, ``macos-arm64``; job
+``build``, milestone 0012 Story 03.0) are in ``tiers.full`` only: they join the
+``build`` list of every row above except the branch push (on a same-repo PR
+too, since its push run did not run them; ADR 0005 D7).
 
 Diff base of the classification: the PR base on ``pr``; the event's
 ``before`` (``CI_BASE_COMMIT``) on a push to ``master`` or a tag; on a push to

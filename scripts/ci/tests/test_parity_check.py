@@ -131,6 +131,18 @@ class ParityTest(_TreeCase):
         self.assertIn("C06: expected hard -> actual missing (windows)", lines)
         self.assertIn("C10: expected best-effort -> actual missing (windows)", lines)
 
+    def test_compound_leg_guards_are_narrowed(self) -> None:
+        """0012 Story 03.0: the Windows packaging leg shares the ``python`` steps."""
+        posix = "matrix.leg != 'windows' && matrix.leg != 'windows-x64'"
+        win = "(matrix.leg == 'windows' || matrix.leg == 'windows-x64')"
+        for leg, on_posix in (("windows", False), ("windows-x64", False), ("linux", True),
+                              ("macos-arm64", True)):
+            with self.subTest(leg=leg):
+                self.assertEqual(pc.step_applies(posix, leg), on_posix)
+                self.assertEqual(pc.step_applies(win, leg), not on_posix)
+        self.assertTrue(pc.step_applies("success() && matrix.leg == 'x'", "linux"),
+                        "a mixed guard is not narrowed (over-reports, never hides a step)")
+
     def test_leg_dropped_from_matrix_is_missing(self) -> None:
         self.edit("stage-gui.yml", lambda t: t.replace(', "macos-gui"]', "]"))
         lines = self.report()

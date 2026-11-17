@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "about": "Pipeline legs, declared once (milestone 0014 plan SC1; ADR 0005 'Matrix / legs'). stage.py validates --leg/CI_LEG against this file and reads every per-leg value from it (preset, build configuration, runner key into pins.json, sudo for live-table runs). The workflow matrix carries only the leg name. 'tiers' is the Q1 ruling (status.md 2026-11-12): a push to a branch other than master runs the 'push_branch' legs; every other event (pull request, push to master, v* tag, schedule, manual) runs 'full'. Packaging legs (<os>-<arch>, ADR 0005 D1) are declared but 'pending' until milestone 0012 names the shipped configuration (Story 03.0) and adds the libsmbios install rules (Story 01.0); stage.py refuses a pending leg with exit 2. 'unit_tests'/'live_table_tests' select the test-stage sets of test_sets.json run through ctest_report.py (Story 03.0 Task 02): C06/C10 on Windows; Q4 live-table under sudo on the plain Linux leg; C13 (unit) and C14 (live-table, macOS only - Q4 skips it under sanitizers on Linux) on the sanitizer legs. 'job' names the workflow job that runs the leg ('build' when absent, or 'sanitizers': configured into build/<preset>-asan with the C12 flags, asan vcpkg cache flavor; stage-sanitizers.yml). 'tiers' list legs of every job; each job's workflow matrix equals its own legs of the tier. GUI legs (Story 03.0 Task 03, inventory C15-C20) have 'job': 'gui' (stage-gui.yml): build/<os>-gui via the <os>-gui preset, gui vcpkg cache flavor, 'apt_packages' runs apt_install.py (C15, Linux only), and the test stage runs the gui steps (C17-C20); 'config' Debug is the old gui-build job's ctest -C Debug on every OS. Q1: the push_branch tier is the three Linux legs (linux, linux-asan, linux-gui).",
+  "about": "Pipeline legs, declared once (milestone 0014 plan SC1; ADR 0005 'Matrix / legs'). stage.py validates --leg/CI_LEG against this file and reads every per-leg value from it (preset, build configuration, runner key into pins.json, sudo for live-table runs). The workflow matrix carries only the leg name. 'tiers' is the Q1 ruling (status.md 2026-11-12): a push to a branch other than master runs the 'push_branch' legs; every other event (pull request, push to master, v* tag, schedule, manual) runs 'full'. Packaging legs (<os>-<arch>, ADR 0005 D1) build the shipped configuration 'Release' (milestone 0012 status.md 2026-11-16 maintainer ruling) in build/<leg>; this DIFFERS BY DESIGN from the Debug configuration the plain windows leg tests (inventory C06, ctest -C Debug) - a Debug artifact would carry the non-redistributable debug CRT on Windows (ADR 0006). 'stages.package' lists the legs 'stage.py package' archives (0012 Story 03.0 Task 01). Packaging legs are in 'tiers.full' only, never 'push_branch', so they build, test (SC2: 'unit_tests' runs the unprivileged set against the Release tree; cli-formats under sudo on linux-x64 as on the plain Linux leg; consumer smoke) and package on every event but a push to a branch other than master (ADR 0005 D7), and a same-repo PR runs them although its push run did not. A leg may still carry 'pending' (stage.py then refuses it with exit 2); none does today. 'unit_tests'/'live_table_tests' select the test-stage sets of test_sets.json run through ctest_report.py (Story 03.0 Task 02): C06/C10 on Windows; Q4 live-table under sudo on the plain Linux leg; C13 (unit) and C14 (live-table, macOS only - Q4 skips it under sanitizers on Linux) on the sanitizer legs. 'job' names the workflow job that runs the leg ('build' when absent, or 'sanitizers': configured into build/<preset>-asan with the C12 flags, asan vcpkg cache flavor; stage-sanitizers.yml). 'tiers' list legs of every job; each job's workflow matrix equals its own legs of the tier. GUI legs (Story 03.0 Task 03, inventory C15-C20) have 'job': 'gui' (stage-gui.yml): build/<os>-gui via the <os>-gui preset, gui vcpkg cache flavor, 'apt_packages' runs apt_install.py (C15, Linux only), and the test stage runs the gui steps (C17-C20); 'config' Debug is the old gui-build job's ctest -C Debug on every OS. Q1: the push_branch tier is the three Linux legs (linux, linux-asan, linux-gui).",
   "stages": {
     "lint": [
       "linux"
@@ -26,7 +26,15 @@
       "macos-asan",
       "linux-gui",
       "windows-gui",
-      "macos-gui"
+      "macos-gui",
+      "linux-x64",
+      "windows-x64",
+      "macos-arm64"
+    ],
+    "package": [
+      "linux-x64",
+      "windows-x64",
+      "macos-arm64"
     ]
   },
   "tiers": {
@@ -43,7 +51,10 @@
       "macos-asan",
       "linux-gui",
       "windows-gui",
-      "macos-gui"
+      "macos-gui",
+      "linux-x64",
+      "windows-x64",
+      "macos-arm64"
     ]
   },
   "legs": {
@@ -102,34 +113,31 @@
     "linux-x64": {
       "runner": "linux",
       "preset": "linux",
-      "config": null,
-      "live_table_sudo": false,
+      "config": "Release",
+      "live_table_sudo": true,
       "sysfs_info": false,
       "packaging": true,
-      "pending": "milestone 0012: shipped configuration (Story 03.0) and libsmbios install rules (Story 01.0)",
-      "unit_tests": false,
+      "unit_tests": true,
       "live_table_tests": false
     },
     "windows-x64": {
       "runner": "windows",
       "preset": "windows",
-      "config": null,
+      "config": "Release",
       "live_table_sudo": false,
       "sysfs_info": false,
       "packaging": true,
-      "pending": "milestone 0012: shipped configuration (Story 03.0) and libsmbios install rules (Story 01.0)",
-      "unit_tests": false,
+      "unit_tests": true,
       "live_table_tests": false
     },
     "macos-arm64": {
       "runner": "macos",
       "preset": "macos",
-      "config": null,
+      "config": "Release",
       "live_table_sudo": false,
       "sysfs_info": false,
       "packaging": true,
-      "pending": "milestone 0012: shipped configuration (Story 03.0) and libsmbios install rules (Story 01.0)",
-      "unit_tests": false,
+      "unit_tests": true,
       "live_table_tests": false
     },
     "linux-gui": {

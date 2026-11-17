@@ -340,15 +340,36 @@ class PlanDrivenReportTests(unittest.TestCase):
         self.assertTrue(table.startswith("## CI: PASS"))
 
     def test_UndefinedStagesAreReasonRows(self) -> None:
-        for event, ref, want in (("tag", "refs/tags/v1.0.0", "not run: stage not defined"),
-                                 ("push", "refs/heads/topic", "not run: tier")):
-            with self.subTest(event=event):
+        # package is defined since 0012 Story 03.0: scheduled on a tag, its row says
+        # where the result is (never PASS); verify/publish are still undefined.
+        for event, ref, want, names in (
+                ("tag", "refs/tags/v1.0.0", "not run: stage not defined", ("verify", "publish")),
+                ("tag", "refs/tags/v1.0.0", run_report.STAGE_RUN, ("package",)),
+                ("push", "refs/heads/topic", "not run: tier", run_report.PIPELINE_STAGES)):
+            with self.subTest(event=event, want=want):
                 table = self.table(self.parsed(event, ref, "full"), {})
-                for stage_name in run_report.PIPELINE_STAGES:
+                for stage_name in names:
                     row = next(ln for ln in table.splitlines()
                                if ln.startswith(f"| {stage_name} |"))
                     self.assertEqual(row.count(want), len(run_report.OS_COLUMNS), row)
                 self.assertNotIn("PASS |", table.split("| package |")[1])
+
+    def test_PackagingLegsHaveTheirOwnRow(self) -> None:
+        parsed = self.parsed("pr", "refs/pull/4/merge", "full", same_repo=False)
+        expected, _, _ = run_report.legs_from_plan(LEGS, parsed)
+        records = {key: [rec()] for key in expected}
+        table = self.table(parsed, records)
+        build = next(ln for ln in table.splitlines() if ln.startswith("| build |"))
+        packaging = next(ln for ln in table.splitlines()
+                         if ln.startswith(f"| {run_report.PACKAGING_ROW} |"))
+        self.assertEqual(build.split(" | ")[1:4], ["PASS", "PASS", "PASS"])
+        self.assertEqual(packaging.split(" | ")[1:4], ["PASS", "PASS", "PASS"])
+        records.pop(("build", "windows-x64"))
+        table = self.table(parsed, records)
+        packaging = next(ln for ln in table.splitlines()
+                         if ln.startswith(f"| {run_report.PACKAGING_ROW} |"))
+        self.assertEqual(packaging.split(" | ")[2], "no record")
+        self.assertTrue(table.startswith("## CI: FAIL"))
 
     def test_PlannedLegWithoutArtifactIsNoRecord(self) -> None:
         parsed = self.parsed("push", "refs/heads/topic", "full")

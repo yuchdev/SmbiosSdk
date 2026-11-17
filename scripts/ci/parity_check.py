@@ -277,13 +277,27 @@ def load_workflows(tree: Tree) -> Workflows:
 
 
 def step_applies(cond: Optional[str], leg: str) -> bool:
-    """Evaluate a stage step's ``if:`` for ``leg`` (only ``matrix.leg ==/!= '<x>'`` is narrowed)."""
+    """Evaluate a stage step's ``if:`` for ``leg``.
+
+    Narrowed: one ``matrix.leg ==/!= '<x>'`` comparison, or a chain of them
+    joined only by ``&&`` or only by ``||`` (optionally in one pair of outer
+    parentheses), e.g. ``matrix.leg != 'windows' && matrix.leg != 'windows-x64'``
+    (milestone 0012 Story 03.0: the Windows packaging leg uses the ``python``
+    steps). Anything else counts as applying (the dry run then over-reports,
+    never under-reports, which steps a leg runs).
+    """
     if cond is None:
         return True
-    match = _LEG_IF.match(cond)
-    if match is None:
-        return True
-    return (leg == match.group(2)) == (match.group(1) == "==")
+    text = cond.strip()
+    if text.startswith("(") and text.endswith(")") and text.count("(") == 1:
+        text = text[1:-1].strip()
+    for op, combine in ((" && ", all), (" || ", any)):
+        parts = [part.strip() for part in text.split(op)]
+        matches = [_LEG_IF.match(part) for part in parts]
+        if all(matches):
+            return combine((leg == m.group(2)) == (m.group(1) == "==")  # type: ignore[union-attr]
+                           for m in matches)
+    return True
 
 
 def invocations(job: StageJob, leg: str) -> List[Tuple[str, Optional[str]]]:

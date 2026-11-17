@@ -29,8 +29,10 @@ printed once with the legs listed.
 
 Below the leg jobs, one row per milestone 0012 stage (``package``,
 ``verify``, ``publish``) carries the plan's reason in every column: ``not
-run: stage not defined`` until 0012 defines the stage, or ``not run: tier``.
-These rows are not legs and are not counted.
+run: stage not defined`` until 0012 defines the stage, ``not run: tier``, or,
+for a scheduled stage, ``run: result in its own jobs`` (never PASS: the
+stage's jobs publish no summary artifact yet). These rows are not legs and are
+not counted.
 
 When anything failed (or has no record) the report adds exactly one run-level
 error annotation, ``<n> legs failed: <job>/<leg>, ...``, through the
@@ -54,6 +56,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import json  # noqa: E402
+import re  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Dict, List, Mapping, Optional, Sequence, Set, Tuple  # noqa: E402
 
@@ -66,7 +69,18 @@ TABLE_MAX_LINES = 40
 #: Largest artifact file read (the writer caps it at 8 KiB).
 ARTIFACT_READ_MAX = 16 * 1024
 #: Job rows in pipeline order; ``lint`` has the single leg ``linux``.
+#: Row of the build job's packaging legs (``<os>-<arch>``, ADR 0005 D1; milestone 0012
+#: Story 03.0): their own row, so a plain leg and a packaging leg never share a cell.
+PACKAGING_ROW = "build (packaging)"
 JOB_ORDER: Tuple[str, ...] = ("lint", "build", "sanitizers", "gui")
+#: Table rows in order: one per job, the packaging legs after ``build``.
+ROW_ORDER: Tuple[str, ...] = ("lint", "build", PACKAGING_ROW, "sanitizers", "gui")
+_PACKAGING_LEG = re.compile(r"^(linux|windows|macos)-(x64|arm64)$")
+
+
+def row_of(key: Tuple[str, str]) -> str:
+    """Return the table row of a ``(job, leg)``: the job, or :data:`PACKAGING_ROW`."""
+    return PACKAGING_ROW if key[0] == "build" and _PACKAGING_LEG.match(key[1]) else key[0]
 LINT_LEG: Tuple[str, str] = ("lint", "linux")
 #: Table columns; a leg's column is the OS its name starts with.
 OS_COLUMNS: Tuple[str, ...] = ("linux", "windows", "macos")
@@ -77,6 +91,8 @@ NO_RECORD = "no record"
 NOT_RUN_TIER = "not run: tier"
 NOT_RUN_COVERED = "not run: covered by push run"
 NOT_RUN_UNDEFINED = "not run: stage not defined"
+#: Cell of a scheduled 0012 stage (its result is in its own jobs, not summarised here).
+STAGE_RUN = "run: result in its own jobs"
 #: Milestone 0012 stages shown as reason-only rows (``plan.PIPELINE_STAGES``).
 PIPELINE_STAGES: Tuple[str, ...] = ("package", "verify", "publish")
 NO_LEG = "-"
@@ -190,14 +206,14 @@ def render_run_table(job_records: Mapping[LegKey, Sequence[dict]],
         head += f", {counts['missing']} no record"
     if counts["covered"]:
         head += f", {counts['covered']} not run (covered by push run)"
-    jobs = [j for j in JOB_ORDER if any(k[0] == j for k in states)]
-    jobs += sorted({k[0] for k in states} - set(jobs))
+    jobs = [j for j in ROW_ORDER if any(row_of(k) == j for k in states)]
+    jobs += sorted({row_of(k) for k in states} - set(jobs))
     rows = ["| job | " + " | ".join(OS_COLUMNS) + " | first failure (once) |",
             "|---|" + "---|" * len(OS_COLUMNS) + "---|"]
     for job in jobs:
         cells: List[str] = []
         for column in OS_COLUMNS:
-            legs = [k for k in states if k[0] == job and leg_os(k[1]) == column]
+            legs = [k for k in states if row_of(k) == job and leg_os(k[1]) == column]
             texts = []
             for key in legs:
                 state = states[key]
@@ -207,7 +223,7 @@ def render_run_table(job_records: Mapping[LegKey, Sequence[dict]],
             cells.append(", ".join(texts) if texts else NO_LEG)
         firsts: Dict[LegKey, str] = {}
         for key, state in states.items():
-            if key[0] == job and state == "fail":
+            if row_of(key) == job and state == "fail":
                 text = job_summary.first_failure(job_records.get(key, ()))
                 if text:
                     firsts[key] = text
@@ -216,6 +232,10 @@ def render_run_table(job_records: Mapping[LegKey, Sequence[dict]],
         reason = (stages or {}).get(name)
         if reason in (NOT_RUN_TIER, NOT_RUN_UNDEFINED):
             rows.append(f"| {name} | " + " | ".join([reason] * len(OS_COLUMNS)) + " |  |")
+        elif reason == "run":
+            # Scheduled, but its jobs publish no summary artifact yet: say where the
+            # result is instead of a cell that could read as PASS.
+            rows.append(f"| {name} | " + " | ".join([STAGE_RUN] * len(OS_COLUMNS)) + " |  |")
     lines = [head, ""] + rows
     versions = _versions(env_lines or {})
     room = max_lines - len(lines) - 1  # one blank line before the versions

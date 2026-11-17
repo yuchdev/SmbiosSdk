@@ -130,6 +130,19 @@ jobs:
     with:
       legs: ${{ needs.plan.outputs.gui }}
 
+  # Milestone 0012 Story 03.0 Task 01 (ADR 0005 D1/D4/D7): the package stage.
+  # Runs when the plan schedules it (every full-classified event but a branch
+  # push), after the build job built, tested and installed the packaging legs
+  # (tiers.full only). Each leg's install digest and hand-off artifact ID are
+  # build-job outputs (CR-8), passed as one JSON object per leg; the stage
+  # downloads by ID and refuses a tree whose digest differs. It never builds.
+  package:
+    needs: [plan, build]
+    if: needs.plan.outputs.package != '[]'
+    uses: ./.github/workflows/stage-package.yml
+    with:
+      legs: ${{ format('[{{"leg":"linux-x64","install_sha256":{0},"artifact_id":"{1}"}},{{"leg":"windows-x64","install_sha256":{2},"artifact_id":"{3}"}},{{"leg":"macos-arm64","install_sha256":{4},"artifact_id":"{5}"}}]', needs.build.outputs.install_sha256_linux_x64, needs.build.outputs.install_artifact_linux_x64, needs.build.outputs.install_sha256_windows_x64, needs.build.outputs.install_artifact_windows_x64, needs.build.outputs.install_sha256_macos_arm64, needs.build.outputs.install_artifact_macos_arm64) }}
+
   # Story 04.0 Task 01 (plan E9): one run-level table of at most 40 lines
   # from the summary-<job>-<leg> artifacts every job uploads, and, when a
   # leg failed or has no record, the single run-level error annotation.
@@ -137,7 +150,8 @@ jobs:
   # re-validated by plan.parse_plan): a leg the plan does not run shows
   # `not run: tier` or `not run: covered by push run`, a missing artifact of
   # a planned leg `no record` (never PASS); the milestone 0012 stages show
-  # `not run: stage not defined`.
+  # `not run: stage not defined`, `not run: tier`, or for a scheduled stage
+  # (package) `run: result in its own jobs` (its jobs publish no summary yet).
   report:
     name: report
     needs: [plan, lint, build, sanitizers, gui]

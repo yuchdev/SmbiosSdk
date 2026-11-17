@@ -1,0 +1,162 @@
+# Reusable `package` stage (milestone 0012 Story 03.0 Task 01; ADR 0005
+# D1/D4/D8). It archives the build stage's tested `cmake --install` trees; it
+# never configures or builds. Every `run:` step is one stage-command line (P7);
+# the logic is in scripts/ci/stage.py and scripts/ci/package_archive.py.
+#
+# Input: `legs`, a JSON list built by ci.yml from the build job's outputs, one
+# object per packaging leg of scripts/ci/legs.json "stages.package":
+#   {"leg": "<os>-<arch>", "install_sha256": "<64 hex>", "artifact_id": <id>}
+# Both values are job outputs of the build job (written only by that job),
+# never files inside the artifact, so a sibling job that replaced the artifact
+# is caught (threat model CR-8): the hand-off is downloaded by artifact ID and
+# `stage.py package` requires the unpacked tree's digest to equal
+# install_sha256 (CI_INSTALL_SHA256, from the matrix: P10 allows matrix.*).
+#
+# Jobs:
+#   package (one per leg, pinned Linux label; archiving is platform-neutral
+#     Python and the manifest's glibc/macos_min/msvc value is read from the
+#     installed library itself): download install-<leg>.tar by ID, then
+#     `stage.py package` (unpack + digest check, archive, .sha256, one-leg
+#     manifest), then upload dist-<leg> as three literal paths (P15).
+#   manifest: download every dist-<leg>, `stage.py package --only manifest`
+#     merges them into the one dist/manifest.json (each archive re-checked
+#     against its part's digest; digests are copied, never recomputed), then
+#     upload `dist` (three archives, three .sha256, manifest.json) for
+#     verify/publish (0012 Story 04.0).
+# Shipped configuration: Release (0012 status.md 2026-11-16). No probe caller:
+# the package stage never runs on a branch push (ADR 0005 D7).
+name: stage-package
+
+on:
+  workflow_call:
+    inputs:
+      legs:
+        description: JSON list of {leg, install_sha256, artifact_id}, one per packaging leg (ci.yml)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+# Neutral names (ADR 0005 "Neutral environment names"). runner.temp is only
+# available at step level, so CI_TEMP_DIR is set on each stage step.
+env:
+  CI_PLATFORM: github
+  CI_REPORTER: github
+  CI_RUN_ID: ${{ github.run_id }}
+  CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+  CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  CI_EVENT: ${{ github.ref_type == 'tag' && 'tag' || github.event_name == 'pull_request' && 'pr' || github.event_name == 'workflow_dispatch' && 'manual' || github.event_name }}
+  CI_REF: ${{ github.ref }}
+  CI_REF_NAME: ${{ github.ref_name }}
+  CI_COMMIT: ${{ github.sha }}
+  CI_WORKSPACE: ${{ github.workspace }}
+
+jobs:
+  package:
+    name: package (${{ matrix.leg }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.legs) }}
+    env:
+      CI_JOB: package
+      CI_LEG: ${{ matrix.leg }}
+      CI_INSTALL_SHA256: ${{ matrix.install_sha256 }}
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 3
+        with:
+          persist-credentials: false
+
+      # SC2 hand-off by artifact ID (CR-8): $CI_ARTIFACT_DIR/install-<leg>.tar.
+      - name: Download install tree
+        id: download-install
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 3
+        with:
+          artifact-ids: ${{ matrix.artifact_id }}
+          path: ${{ runner.temp }}/artifacts
+          merge-multiple: true
+
+      # unpack (digest must equal the build job's), archive, .sha256, one-leg
+      # manifest. A missing hand-off exits 2 naming its path.
+      - name: Package
+        id: package
+        run: python3 scripts/ci/stage.py package
+        timeout-minutes: 5
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+
+      - name: Upload leg dist
+        id: upload-leg
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        timeout-minutes: 3
+        with:
+          name: dist-${{ matrix.leg }}
+          path: |
+            ${{ runner.temp }}/artifacts/dist/libbios-${{ fromJSON(steps.package.outputs.version) }}-${{ matrix.leg }}.${{ fromJSON(steps.package.outputs.archive_ext) }}
+            ${{ runner.temp }}/artifacts/dist/libbios-${{ fromJSON(steps.package.outputs.version) }}-${{ matrix.leg }}.${{ fromJSON(steps.package.outputs.archive_ext) }}.sha256
+            ${{ runner.temp }}/artifacts/dist/manifest.json
+          include-hidden-files: false
+          if-no-files-found: error
+          retention-days: 3
+
+  manifest:
+    name: package (manifest)
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      CI_JOB: package
+      # The merge covers every packaging leg; the leg only labels this job's
+      # records and must be a packaging leg (stage.py validates it).
+      CI_LEG: linux-x64
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 3
+        with:
+          persist-credentials: false
+
+      # Each dist-<leg> into $CI_ARTIFACT_DIR/parts/dist-<leg>/.
+      - name: Download leg dists
+        id: download-parts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 3
+        with:
+          pattern: dist-*
+          path: ${{ runner.temp }}/artifacts/parts
+          merge-multiple: false
+
+      - name: Manifest
+        id: manifest
+        run: python3 scripts/ci/stage.py package --only manifest
+        timeout-minutes: 2
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+
+      # D4 dist/ for verify/publish: literal file paths only (P15); the
+      # version in the names is the manifest step's `version` output (D5).
+      - name: Upload dist
+        id: upload-dist
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        timeout-minutes: 3
+        with:
+          name: dist
+          path: |
+            ${{ runner.temp }}/artifacts/dist/libbios-${{ fromJSON(steps.manifest.outputs.version) }}-linux-x64.tar.gz
+            ${{ runner.temp }}/artifacts/dist/libbios-${{ fromJSON(steps.manifest.outputs.version) }}-linux-x64.tar.gz.sha256
+            ${{ runner.temp }}/artifacts/dist/libbios-${{ fromJSON(steps.manifest.outputs.version) }}-windows-x64.zip
+            ${{ runner.temp }}/artifacts/dist/libbios-${{ fromJSON(steps.manifest.outputs.version) }}-windows-x64.zip.sha256
+            ${{ runner.temp }}/artifacts/dist/libbios-${{ fromJSON(steps.manifest.outputs.version) }}-macos-arm64.tar.gz
+            ${{ runner.temp }}/artifacts/dist/libbios-${{ fromJSON(steps.manifest.outputs.version) }}-macos-arm64.tar.gz.sha256
+            ${{ runner.temp }}/artifacts/dist/manifest.json
+          include-hidden-files: false
+          if-no-files-found: error
+          retention-days: 3

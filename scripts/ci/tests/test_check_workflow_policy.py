@@ -630,8 +630,13 @@ class ProbeWorkflows(_TmpCase):
                 for leg in json.loads(str(job["with"]["legs"])):
                     self.assertIn(leg, legs["tiers"]["push_branch"])
                     self.assertEqual(legs["legs"][leg].get("job", "build"), job_id)
+        # stage-package.yml has no probe caller: the package stage never runs on a
+        # branch push (ADR 0005 D7, stage.stage_selected) and needs the
+        # install-<leg> artifacts of the same run's build stage (0012 Story 03.0).
+        no_probe = {"./.github/workflows/stage-package.yml"}
         self.assertEqual(used, {f"./.github/workflows/{p.name}" for p in
-                                (REPO_ROOT / ".github" / "workflows").glob("stage-*.yml")})
+                                (REPO_ROOT / ".github" / "workflows").glob("stage-*.yml")}
+                         - no_probe)
 
 
 class Guards(unittest.TestCase):

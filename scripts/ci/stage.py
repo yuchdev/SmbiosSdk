@@ -10,9 +10,9 @@ One workflow step is one invocation of this command::
 
 Every sub-step goes through the ``ci_step`` library (RC1-RC3), so a green
 sub-step prints exactly one ``ok:``/``info:``/``skip:`` line (plus the RC4
-header). This task (Story 03.0 Task 01) implements ``lint``, ``build`` and
-``test``; ``package``/``verify``/``publish`` are milestone 0012's and exit 2
-until they are defined.
+header). Milestone 0014 Story 03.0 Task 01 implemented ``lint``, ``build`` and
+``test``; milestone 0012 Story 03.0 Task 01 adds ``package``.
+``verify``/``publish`` (0012 Story 04.0) exit 2 until they are defined.
 
 Stages and their steps (``--only`` selects one; without it every step runs in
 this order):
@@ -37,9 +37,13 @@ this order):
     (plan Q3, threat model CR-10);
     ``install`` - packaging legs only (SC2): ``cmake --install`` into
     ``$CI_ARTIFACT_DIR/install/<leg>/`` and the tree digest exported as the job
-    output ``install_digest`` (CR-8). Packaging legs stay ``pending`` in
-    ``legs.json`` until milestone 0012 names the shipped configuration and adds
-    the ``libsmbios`` install rules, so today this step prints ``skip:``.
+    output ``install_digest`` (CR-8); other legs print ``skip:``.
+    Packaging legs (``linux-x64``, ``windows-x64``, ``macos-arm64``) build the
+    shipped configuration, ``Release`` (0012 status.md 2026-11-16), in their own
+    tree ``build/<leg>`` (configured with ``-DCMAKE_BUILD_TYPE=<config>``, built
+    and installed with ``--config <config>``), so they never reuse the Debug
+    tree of the plain leg of the same preset. That configuration differs by
+    design from the ``-C Debug`` the plain Windows leg tests (inventory C06).
 ``test`` (every step runs; the stage fails if any did):
     ``unit`` (hard; C06 on Windows, C13 on the sanitizer legs; legs with
     ``unit_tests``), ``cli-formats`` (C07, C08, C09; ``cli_format_check.py``;
@@ -52,6 +56,24 @@ this order):
     ``live-table`` run the ``test_sets.json`` sets through ``ctest_report.py``
     (Story 03.0 Task 02): the exit code decides, the counts come from
     ``ctest --output-junit``.
+``package`` (milestone 0012 Story 03.0 Task 01; ADR 0005 D1/D4; packaging
+legs only; it never configures or builds; stops at the first failing step):
+    ``env`` (RC4 header); ``unpack``: extracts the build job's one-file
+    hand-off ``$CI_ARTIFACT_DIR/install-<leg>.tar`` into ``install/<leg>/`` and
+    requires its install-tree digest to equal ``CI_INSTALL_SHA256`` (the build
+    job's per-leg digest output, CR-8; required on CI); a missing hand-off is
+    one RC1 line naming the path and exit 2, never a fallback to a build tree;
+    ``archive`` (``package_archive.py``): refuses a tree the digest refuses
+    (symlink, ``Testing``), a tree without the ruled contents or with the
+    ``smbios`` CLI/``smbios_gui`` (status.md 2026-11-16 ruling I2); then writes
+    ``dist/libbios-<version>-<leg>.<ext>`` (reproducible ``.tar.gz``, ``.zip``
+    on Windows), its ``.sha256`` and the leg's entry in ``dist/manifest.json``.
+    ``<version>`` is the D5 value read by ``check_versions.check`` (today the
+    interim ``SMBIOS_C_VERSION``); a version-site mismatch fails the step. The
+    job outputs ``version`` and ``archive_ext`` name the files for the
+    workflow's literal-path upload (P15). ``manifest`` (``--only manifest``,
+    the manifest job): merges the per-leg ``parts/dist-<leg>/`` into the one
+    ``dist/manifest.json``; it skips in a per-leg run.
 
 Sanitizer legs (Story 03.0 Task 02; legs with ``"job": "sanitizers"``,
 inventory C12-C14): ``build`` configures into ``build/<preset>-asan`` with
@@ -80,7 +102,10 @@ platform's own validation is never relied on.
 
 Trigger tiering (plan Q1): a leg not selected for ``$CI_EVENT``/``$CI_REF``
 prints one ``skip:`` line and exits 0 (the workflow does not start such legs;
-this is the portable self-skip of ADR 0005 "Trigger tiering").
+this is the portable self-skip of ADR 0005 "Trigger tiering"). The packaging
+legs are in ``tiers.full`` only, never ``tiers.push_branch``, so their build,
+test and ``package`` stages follow ADR 0005 D7: every event except a push to a
+branch other than ``master``.
 
 Utility commands (Story 04.0 Task 01, plan E9), also one workflow line each:
     ``summary [--job-failed]`` - the last step of every job (``job_summary.py``):
@@ -145,6 +170,7 @@ STEPS: Final[Dict[str, Tuple[str, ...]]] = {
     "build": ("packages", "prepare", "compile", "install"),
     "test": ("unit", "cli-formats", "live-table", "consumer", "gui-binary", "gui-hooks",
              "gui-ci", "gui-local"),
+    "package": ("env", "unpack", "archive", "manifest"),
 }
 #: Run order of each (stage, job); a stage absent here runs all of ``STEPS``.
 JOB_STEPS: Final[Dict[Tuple[str, str], Tuple[str, ...]]] = {
@@ -196,6 +222,8 @@ _REF = re.compile(r"^refs/[A-Za-z0-9._/+-]{1,200}$")
 _REF_NAME = re.compile(r"^[A-Za-z0-9._/+-]{1,200}$")
 _PATH_TOKEN = re.compile(r"^[A-Za-z0-9._/+-]{1,120}$")
 _HOST_LEGS: Final = {"Linux": "linux", "Darwin": "macos", "Windows": "windows"}
+_HOST_ARCHES: Final = {"x86_64": "x64", "amd64": "x64", "arm64": "arm64", "aarch64": "arm64"}
+_COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
 EXIT_OK: Final = 0
 EXIT_GATE: Final = 1
@@ -208,6 +236,15 @@ class UsageError(Exception):
 
 class DigestError(Exception):
     """The install tree cannot be digested (symlink, special file, ``Testing/``, empty)."""
+
+
+class ReportedUsageError(UsageError):
+    """An environment error (exit 2) whose RC1 line the step already printed and recorded.
+
+    Raised by a step whose required input is absent (the ``package`` stage's
+    ``install/<leg>``), so the stage exits 2 with that one line and no second
+    ``stage.py: error:`` line.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +386,13 @@ def host_leg() -> str:
     return _HOST_LEGS.get(platform.system(), "linux")
 
 
+def host_packaging_leg() -> str:
+    """Return the packaging leg ``<os>-<arch>`` of this host (local default of ``package``)."""
+    arch = _HOST_ARCHES.get(platform.machine().lower(), "x64")
+    return f"{host_leg()}-{arch}"
+
+
+
 # ---------------------------------------------------------------------------
 # Install-tree digest (SC2, CR-8, CR-9)
 # ---------------------------------------------------------------------------
@@ -440,6 +484,7 @@ class Context:
     run_id: str = "local"
     py: str = field(default_factory=lambda: sys.executable)
     pins_file: Path = PINS_FILE
+    only: Optional[str] = None
 
     @property
     def local(self) -> bool:
@@ -448,7 +493,14 @@ class Context:
 
     @property
     def build_dir(self) -> Path:
-        """The preset's build tree, ``build/<preset>`` (``build/<preset>-asan`` on sanitizer legs)."""
+        """The leg's build tree.
+
+        ``build/<preset>``; ``build/<preset>-asan`` on sanitizer legs; and
+        ``build/<leg>`` on packaging legs, which build the shipped
+        configuration and so never share the plain leg's Debug tree.
+        """
+        if self.leg.packaging:
+            return self.workspace / "build" / self.leg.name
         suffix = "-asan" if self.leg.sanitizers else ""
         return self.workspace / "build" / (self.leg.preset + suffix)
 
@@ -694,8 +746,14 @@ def configure_argv(ctx: Context) -> List[str]:
     """Return the configure argv: the preset, or on a sanitizer leg the C12 configure.
 
     A sanitizer leg keeps its own binary directory (``-B build/<preset>-asan``)
-    so it never clobbers the plain build tree of the same checkout.
+    so it never clobbers the plain build tree of the same checkout. A
+    packaging leg configures ``build/<leg>`` with ``CMAKE_BUILD_TYPE`` set to
+    its shipped configuration (single-config generators; a multi-config
+    generator ignores it and takes ``--config`` at build time).
     """
+    if ctx.leg.packaging:
+        return ["cmake", "--preset", ctx.leg.preset, "-B", str(ctx.build_dir),
+                f"-DCMAKE_BUILD_TYPE={_shipped_config(ctx)}"]
     if not ctx.leg.sanitizers:
         return ["cmake", "--preset", ctx.leg.preset]
     return ["cmake", "--preset", ctx.leg.preset, "-B", str(ctx.build_dir),
@@ -703,8 +761,22 @@ def configure_argv(ctx: Context) -> List[str]:
             f"-DCMAKE_EXE_LINKER_FLAGS={SANITIZER_LINK_FLAGS}"]
 
 
+def _shipped_config(ctx: Context) -> str:
+    """Return a packaging leg's build configuration (``legs.json`` ``config``).
+
+    Raises:
+        UsageError: The leg has no configuration (a packaging leg must name one).
+    """
+    config = ctx.leg.config or ""
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,31}", config):
+        raise UsageError("a packaging leg needs a build configuration in legs.json")
+    return config
+
+
 def build_argv(ctx: Context) -> List[str]:
-    """Return the build argv (the preset's, or the sanitizer tree's)."""
+    """Return the build argv (the preset's, the sanitizer tree's, or a packaging leg's)."""
+    if ctx.leg.packaging:
+        return ["cmake", "--build", str(ctx.build_dir), "--config", _shipped_config(ctx)]
     if not ctx.leg.sanitizers:
         return ["cmake", "--build", "--preset", ctx.leg.preset]
     return ["cmake", "--build", str(ctx.build_dir)]
@@ -736,8 +808,24 @@ def step_compile(ctx: Context) -> int:
     return rc
 
 
+def handoff_path(ctx: Context) -> Path:
+    """The single-file hand-off of ``install/<leg>/``: ``$CI_ARTIFACT_DIR/install-<leg>.tar``.
+
+    Policy P15 uploads literal file paths only, never a directory, so the build
+    stage ships its tested tree to the package stage as this one uncompressed
+    tar (plumbing, not a product archive).
+    """
+    return ctx.artifact_dir / f"install-{ctx.leg.name}.tar"
+
+
+def install_output_name(leg: str) -> str:
+    """The per-leg job output carrying the install-tree digest (``install_sha256_linux_x64``)."""
+    return "install_sha256_" + leg.replace("-", "_")
+
+
 def run_install(ctx: Context) -> int:
-    """SC2: ``cmake --install`` into ``install/<leg>/``, then the tree digest as a job output."""
+    """SC2: ``cmake --install`` into ``install/<leg>/``, the tree digest as job outputs, and the
+    one-file hand-off ``install-<leg>.tar`` (:func:`handoff_path`)."""
     start = time.monotonic()
     prefix = ctx.artifact_dir / "install" / ctx.leg.name
     if prefix.is_symlink():
@@ -755,10 +843,23 @@ def run_install(ctx: Context) -> int:
         digest, count = tree_digest(prefix)
     except DigestError as exc:
         return ctx.fail("install tree", str(exc), start)
+    import package_archive as pa
+    handoff = handoff_path(ctx)
+    try:
+        if handoff.is_symlink():
+            raise pa.ArchiveError("hand-off archive path is a symlink")
+        if handoff.exists():
+            handoff.unlink()
+        pa.archive_tree(prefix, handoff, "tar")
+    except pa.ArchiveError as exc:
+        return ctx.fail("install tree", str(exc), start)
     ctx.reporter.set_output("install_digest", {"leg": ctx.leg.name, "sha256": digest,
                                                "files": count})
+    # CR-8: one uniquely named output per leg, so the matrix build job's
+    # combined outputs never overwrite each other (each leg sets only its own).
+    ctx.reporter.set_output(install_output_name(ctx.leg.name), digest)
     elapsed = round(time.monotonic() - start, 1)
-    summary = f"{count} files, sha256 {digest[:16]}"
+    summary = f"{count} files, sha256 {digest[:16]}, {handoff.name}"
     ctx.emit(ctx.reporter.step_ok("install tree", summary, elapsed))
     ci_step.append_record(ci_step.StepResult("install tree", "hard", "ok", 0, elapsed, summary,
                                              None, None), ctx.results)
@@ -913,6 +1014,238 @@ def step_gui_local(ctx: Context) -> int:
                                               _gui_ctx(ctx))
 
 
+# ---------------------------------------------------------------------------
+# package (milestone 0012 Story 03.0 Task 01; ADR 0005 D1/D4)
+# ---------------------------------------------------------------------------
+
+def _commit(ctx: Context) -> str:
+    """Return the commit the manifest records: ``CI_COMMIT`` on CI, ``git rev-parse HEAD`` locally.
+
+    Raises:
+        UsageError: On CI, ``CI_COMMIT`` is not a 40-hex commit id.
+    """
+    value = env_names.get("CI_COMMIT")
+    if value:
+        if not _COMMIT.fullmatch(value):
+            raise UsageError("CI_COMMIT must be a 40-hex commit id")
+        return value
+    if not ctx.local:
+        raise UsageError("CI_COMMIT is required by the package stage")
+    import subprocess
+    from reporters import child_environment
+    try:
+        proc = subprocess.run(["git", "-C", str(ctx.workspace), "rev-parse", "HEAD"],
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              stdin=subprocess.DEVNULL, env=child_environment(os.environ),
+                              timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    head = proc.stdout.decode("ascii", errors="replace").strip()
+    return head if proc.returncode == 0 and _COMMIT.fullmatch(head) else "unknown"
+
+
+def _fail_input(ctx: Context, label: str, first: str, start: float) -> int:
+    """Print and record one RC1 failure with exit 2, then raise :class:`ReportedUsageError`."""
+    elapsed = round(time.monotonic() - start, 1)
+    ctx.emit(ctx.reporter.step_fail(label, EXIT_USAGE, elapsed, first, []))
+    ci_step.append_record(ci_step.StepResult(label, "hard", "fail", EXIT_USAGE, elapsed, "",
+                                             first, None), ctx.results)
+    raise ReportedUsageError(first)
+
+
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def step_unpack(ctx: Context) -> int:
+    """Rebuild ``install/<leg>/`` from the build stage's hand-off and prove it is the tested tree.
+
+    The input is ``$CI_ARTIFACT_DIR/install-<leg>.tar`` (downloaded by artifact
+    ID on CI, CR-8). It is extracted with :func:`package_archive.extract_tar`
+    and its install-tree digest must equal ``CI_INSTALL_SHA256``, the build
+    job's own digest output for this leg; a mismatch fails the stage, because
+    then the bytes about to be packaged are not the bytes the build stage
+    tested. On CI the expected digest is required. A local run may skip the
+    tar (an existing ``install/<leg>/`` from ``stage.py build --only install``
+    is used as is) and checks the digest only if ``CI_INSTALL_SHA256`` is set.
+    """
+    import package_archive as pa
+    start = time.monotonic()
+    leg = ctx.leg.name
+    label = f"unpack {leg}"
+    expected = env_names.get("CI_INSTALL_SHA256")
+    if expected and not _HEX64.fullmatch(expected):
+        raise UsageError("CI_INSTALL_SHA256 must be 64 lower-case hex characters")
+    if not expected and not ctx.local:
+        raise UsageError("CI_INSTALL_SHA256 is required on CI (the build job's install digest, "
+                         "CR-8)")
+    tree = ctx.artifact_dir / "install" / leg
+    handoff = handoff_path(ctx)
+    if handoff.is_file() and not handoff.is_symlink():
+        if tree.is_symlink():
+            return ctx.fail(label, "install tree path is a symlink", start)
+        if tree.exists():
+            shutil.rmtree(tree)
+        try:
+            pa.extract_tar(handoff, tree)
+        except pa.ArchiveError as exc:
+            return ctx.fail(label, str(exc), start)
+        source = handoff.name
+    elif ctx.local and tree.is_dir() and not tree.is_symlink():
+        source = "existing install tree (local run)"
+    else:
+        return _fail_input(ctx, label, f"install hand-off missing: {handoff} ($CI_ARTIFACT_DIR/"
+                                       f"install-{leg}.tar, uploaded by the build job; the "
+                                       "package stage never builds)", start)
+    try:
+        digest, count = tree_digest(tree)
+    except DigestError as exc:
+        return ctx.fail(label, str(exc), start)
+    if expected and digest != expected:
+        return ctx.fail(label, f"install tree digest: expected {expected[:16]} -> actual "
+                               f"{digest[:16]} (not the tree the build stage tested)", start)
+    check = "matches the build job's digest" if expected else "digest not checked (local run)"
+    summary = f"{source}: {count} files, sha256 {digest[:16]}, {check}"
+    elapsed = round(time.monotonic() - start, 1)
+    ctx.emit(ctx.reporter.step_ok(label, summary, elapsed))
+    ci_step.append_record(ci_step.StepResult(label, "hard", "ok", 0, elapsed, summary, None,
+                                             None), ctx.results)
+    return 0
+
+
+#: Where the manifest job downloads the per-leg ``dist-<leg>`` artifacts.
+PARTS_DIR: Final = "parts"
+
+
+def step_manifest(ctx: Context) -> int:
+    """Merge the per-leg ``dist-<leg>`` parts into the one ``dist/manifest.json`` (ADR 0005 D4).
+
+    Runs in the package stage's manifest job (``--only manifest``), after the
+    per-leg jobs: every packaging leg of ``legs.json`` ``stages.package`` must
+    have a part ``$CI_ARTIFACT_DIR/parts/dist-<leg>/`` with its archive, its
+    ``.sha256`` and a one-leg ``manifest.json``. Each archive is checked
+    against its part's recorded digest (transfer check; the digest itself was
+    computed once, by the leg's job, and is copied, never recomputed into the
+    manifest), then the archive and its ``.sha256`` are copied into ``dist/``.
+    Without ``--only manifest`` and without a parts directory (a per-leg job,
+    or a local run whose ``archive`` step already merged its leg) it skips.
+    """
+    import package_archive as pa
+    start = time.monotonic()
+    label = "package manifest"
+    parts = ctx.artifact_dir / PARTS_DIR
+    if not parts.is_dir() or parts.is_symlink():
+        if ctx.only != "manifest":
+            return ctx.skip(label, "no per-leg parts; the archive step merged this leg")
+        return _fail_input(ctx, label, f"manifest parts missing: {parts} ($CI_ARTIFACT_DIR/"
+                                       "parts/dist-<leg>/, downloaded from the package jobs)",
+                           start)
+    legs = load_legs().get("stages", {}).get("package", [])  # type: ignore[union-attr]
+    dist = ctx.artifact_dir / "dist"
+    if dist.is_symlink():
+        return ctx.fail(label, "dist directory is a symlink", start)
+    manifest = dist / pa.MANIFEST_NAME
+    try:
+        if manifest.exists():
+            manifest.unlink()
+        version = ""
+        for leg in legs:
+            part = parts / f"dist-{leg}"
+            if part.is_symlink() or not part.is_dir():
+                raise pa.ArchiveError(f"no part for leg {leg}: dist-{leg}")
+            version, commit, entry = pa.leg_entry(part / pa.MANIFEST_NAME)
+            if entry["leg"] != leg:
+                raise pa.ArchiveError(f"part dist-{leg} holds another leg")
+            name = str(entry["file"])
+            archive = part / name
+            side = part / (name + ".sha256")
+            for path in (archive, side):
+                if path.is_symlink() or not path.is_file():
+                    raise pa.ArchiveError(f"part dist-{leg} lacks {path.name}")
+            if pa.sha256_file(archive) != entry["sha256"]:
+                raise pa.ArchiveError(f"{name}: digest differs from its part's manifest entry")
+            if side.read_text(encoding="ascii", errors="replace") != \
+                    f"{entry['sha256']}  {name}\n":
+                raise pa.ArchiveError(f"{side.name} differs from its part's manifest entry")
+            dist.mkdir(parents=True, exist_ok=True)
+            for path in (archive, side):
+                target = dist / path.name
+                if target.is_symlink():
+                    raise pa.ArchiveError(f"{target.name} in dist/ is a symlink")
+                shutil.copyfile(path, target)
+            pa.merge_entry(manifest, version, commit, entry)
+    except pa.ArchiveError as exc:
+        return ctx.fail(label, str(exc), start)
+    ctx.reporter.set_output("version", version)
+    summary = f"{pa.MANIFEST_NAME}: {len(legs)} legs, version {version}"
+    elapsed = round(time.monotonic() - start, 1)
+    ctx.emit(ctx.reporter.step_ok(label, summary, elapsed))
+    ci_step.append_record(ci_step.StepResult(label, "hard", "ok", 0, elapsed, summary, None,
+                                             None), ctx.results)
+    return 0
+
+
+def step_archive(ctx: Context) -> int:
+    """Archive ``install/<leg>/`` into ``dist/`` with its ``.sha256`` and manifest entry.
+
+    Input is only the build stage's tested install tree; an absent tree exits
+    2 naming the exact path (never a fallback to ``build/``). One ``ok:`` line
+    on success; every refusal is one RC1 failure (exit 1).
+    """
+    import check_versions
+    import package_archive as pa
+    start = time.monotonic()
+    leg = ctx.leg.name
+    label = f"package {leg}"
+    src = ctx.artifact_dir / "install" / leg
+    if src.is_symlink() or not src.is_dir():
+        return _fail_input(ctx, label, f"install tree missing: {src} ($CI_ARTIFACT_DIR/install/"
+                                       f"{leg}; produced by stage.py build on this leg - the "
+                                       "package stage never builds)", start)
+    config = _shipped_config(ctx)
+    commit = _commit(ctx)
+    try:
+        outcome = check_versions.check(ctx.workspace)
+    except check_versions.SitesError as exc:
+        raise UsageError(str(exc)) from None
+    if outcome.problems or outcome.authority is None:
+        first = outcome.problems[0] if outcome.problems else "no version"
+        return ctx.fail(label, f"version sites disagree ({first}); run stage.py lint "
+                               "--only versions", start)
+    version = outcome.authority
+    try:
+        digest, count = tree_digest(src)
+    except DigestError as exc:
+        return ctx.fail(label, str(exc), start)
+    dist = ctx.artifact_dir / "dist"
+    if dist.is_symlink():
+        return ctx.fail(label, "dist directory is a symlink", start)
+    try:
+        os_name = pa.leg_os(leg)
+        pa.check_contents(src, os_name)
+        meta = pa.platform_meta(src, os_name)
+        archive = pa.archive_tree(src, dist / pa.archive_name(version, leg),
+                                  pa.archive_format(leg))
+        sha = pa.sha256_file(archive)
+        pa.write_sha256_file(archive, sha)
+        pa.update_manifest(dist / pa.MANIFEST_NAME, leg, archive,
+                           {"version": version, "commit": commit, "config": config,
+                            "install_sha256": digest, "files": str(count), "sha256": sha,
+                            **meta})
+    except pa.ArchiveError as exc:
+        return ctx.fail(label, str(exc), start)
+    ctx.reporter.set_output("version", version)
+    ctx.reporter.set_output("archive_ext", pa.archive_format(leg))
+    ctx.reporter.set_output("package_digest", {"leg": leg, "file": archive.name, "sha256": sha})
+    key, value = next(iter(meta.items()))
+    summary = (f"{archive.name}, {count} files, {archive.stat().st_size} bytes, "
+               f"sha256 {sha[:16]}, {config}, {key} {value}")
+    elapsed = round(time.monotonic() - start, 1)
+    ctx.emit(ctx.reporter.step_ok(label, summary, elapsed))
+    ci_step.append_record(ci_step.StepResult(label, "hard", "ok", 0, elapsed, summary, None,
+                                             None), ctx.results)
+    return 0
+
+
 StepFn = Callable[[Context], int]
 STEP_FUNCTIONS: Final[Dict[str, Dict[str, StepFn]]] = {
     "lint": {"env": step_env, "self-test": step_self_test, "lint": step_lint,
@@ -924,9 +1257,11 @@ STEP_FUNCTIONS: Final[Dict[str, Dict[str, StepFn]]] = {
     "test": {"unit": step_unit, "cli-formats": step_cli_formats, "live-table": step_live_table,
              "consumer": step_consumer, "gui-binary": step_gui_binary,
              "gui-hooks": step_gui_hooks, "gui-ci": step_gui_ci, "gui-local": step_gui_local},
+    "package": {"env": step_env, "unpack": step_unpack, "archive": step_archive,
+                "manifest": step_manifest},
 }
 #: Stages that stop at the first failing step (later steps depend on earlier ones).
-STOP_ON_FAILURE: Final = ("build",)
+STOP_ON_FAILURE: Final = ("build", "package")
 
 
 def _combine(codes: Sequence[int]) -> int:
@@ -947,6 +1282,7 @@ def run_stage(ctx: Context, only: Optional[str]) -> int:
     own = steps_for(ctx.stage, ctx.leg)
     if only and only not in own:
         return ctx.skip(f"{ctx.stage} {only}", f"not a step of the {ctx.leg.job} job")
+    ctx.only = only
     names = [only] if only else list(own)
     codes: List[int] = []
     for name in names:
@@ -1055,7 +1391,8 @@ def build_context(stage: str, leg_value: Optional[str], reporter: Reporter,
     if leg_value is None:
         leg_value = env_names.get("CI_LEG") or None
     if leg_value is None and plat == "local":
-        leg_value = "linux" if stage == "lint" else host_leg()
+        leg_value = ("linux" if stage == "lint" else host_packaging_leg() if stage == "package"
+                     else host_leg())
     leg = validate_leg(stage, leg_value, legs)
     event = env_names.get("CI_EVENT")
     ref = env_names.get("CI_REF")
@@ -1138,6 +1475,8 @@ def main(argv: Sequence[str]) -> int:
     activate_tools(ctx.temp_dir)
     try:
         return run_stage(ctx, only)
+    except ReportedUsageError:
+        return EXIT_USAGE
     except UsageError as exc:
         ci_step.emit_error(f"stage.py: error: {exc}")
         return EXIT_USAGE

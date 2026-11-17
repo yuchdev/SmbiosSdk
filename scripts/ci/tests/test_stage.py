@@ -40,7 +40,8 @@ WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 #: Reusable stage workflow of each leg job (legs.json "job").
 JOB_WORKFLOWS = {"build": "stage-build.yml", "sanitizers": "stage-sanitizers.yml",
                  "gui": "stage-gui.yml"}
-STAGE_WORKFLOWS = ("stage-lint.yml", "stage-build.yml", "stage-sanitizers.yml", "stage-gui.yml")
+STAGE_WORKFLOWS = ("stage-lint.yml", "stage-build.yml", "stage-sanitizers.yml", "stage-gui.yml",
+                   "stage-package.yml")
 POSIX_ONLY = "stub commands are /bin/sh trampolines (POSIX only)"
 
 
@@ -195,14 +196,28 @@ class InputValidationTests(unittest.TestCase):
     def test_LegOfAnotherStageExits2(self) -> None:
         self.assertUsage(run_stage_cli(self.tmp, ["lint", "--leg", "windows"]))
 
-    def test_PendingPackagingLegExits2(self) -> None:
-        proc = run_stage_cli(self.tmp, ["build", "--leg", "linux-x64"])
-        self.assertUsage(proc)
-        self.assertIn("pending", proc.stderr)
+    def test_PendingLegIsRefused(self) -> None:
+        legs = {"stages": {"build": ["linux-x64"]}, "tiers": {},
+                "legs": {"linux-x64": {"runner": "linux", "preset": "linux", "config": None,
+                                       "packaging": True, "pending": "not decided"}}}
+        with self.assertRaisesRegex(stage.UsageError, "pending"):
+            stage.validate_leg("build", "linux-x64", legs)
+
+    def test_PackagingLegsShipReleaseAndAreNotPending(self) -> None:
+        """0012 status.md 2026-11-16 ruling 1: the shipped configuration is Release."""
+        legs = stage.load_legs()
+        self.assertEqual(legs["stages"]["package"], ["linux-x64", "windows-x64", "macos-arm64"])
+        for name in legs["stages"]["package"]:
+            with self.subTest(leg=name):
+                leg = stage.validate_leg("package", name, legs)
+                self.assertTrue(leg.packaging)
+                self.assertIsNone(leg.pending)
+                self.assertEqual(leg.config, "Release")
+                self.assertIn(name, legs["stages"]["build"])
 
     def test_UnknownAndUndefinedStagesExit2(self) -> None:
         self.assertUsage(run_stage_cli(self.tmp, ["deploy"]), "deploy")
-        for name in ("package", "verify", "publish"):
+        for name in ("verify", "publish"):
             with self.subTest(stage=name):
                 proc = run_stage_cli(self.tmp, [name])
                 self.assertUsage(proc)
@@ -246,7 +261,7 @@ class TierTests(unittest.TestCase):
 
     def test_TierTable(self) -> None:
         full = ("linux", "windows", "macos", "linux-asan", "macos-asan", "linux-gui",
-                "windows-gui", "macos-gui")
+                "windows-gui", "macos-gui", "linux-x64", "windows-x64", "macos-arm64")
         cases = {("push", "refs/heads/feature"): ("linux", "linux-asan", "linux-gui"),
                  ("push", "refs/heads/master"): full,
                  ("pr", "refs/pull/7/merge"): full,
@@ -403,7 +418,7 @@ class LegsDataTests(unittest.TestCase):
             runs_on = gate._expressions(str(root["jobs"][job]["runs-on"]))[0]
             label = None
             for part in [p.strip() for p in runs_on.split("||")]:
-                m = re.fullmatch(r"matrix\.leg == '([a-z-]+)' && '([^']+)'", part)
+                m = re.fullmatch(r"matrix\.leg == '([a-z0-9-]+)' && '([^']+)'", part)
                 if m is None:
                     label = part.strip("'")
                     break
@@ -427,7 +442,8 @@ class LegsDataTests(unittest.TestCase):
                 with self.subTest(workflow=name, run=body):
                     self.assertRegex(body.strip(),
                                      r"^python3? scripts/ci/stage\.py ((lint|build|test)"
-                                     r"( --only [a-z-]+)?|summary( --job-failed)?)$")
+                                     r"( --only [a-z-]+)?|summary( --job-failed)?"
+                                     r"|package( --only manifest)?)$")
 
 
 class StepTests(unittest.TestCase):
@@ -567,6 +583,22 @@ class StepTests(unittest.TestCase):
         self.assertEqual(stage.configure_argv(plain), ["cmake", "--preset", "linux"])
         self.assertEqual(stage.build_argv(plain), ["cmake", "--build", "--preset", "linux"])
 
+    def test_PackagingLegBuildsTheShippedConfigInItsOwnTree(self) -> None:
+        leg = stage.Leg("windows-x64", "windows", "windows", "Release", packaging=True)
+        ctx = make_ctx(self.tmp, leg)
+        tree = str(self.tmp / "ws" / "build" / "windows-x64")
+        self.assertEqual(stage.configure_argv(ctx), ["cmake", "--preset", "windows", "-B", tree,
+                                                     "-DCMAKE_BUILD_TYPE=Release"])
+        self.assertEqual(stage.build_argv(ctx), ["cmake", "--build", tree, "--config", "Release"])
+        plain = make_ctx(self.tmp, stage.Leg("windows", "windows", "windows", "Debug"))
+        self.assertEqual(plain.build_dir, self.tmp / "ws" / "build" / "windows",
+                         "the C06 Debug tree is never the packaged one")
+
+    def test_PackagingLegWithoutConfigIsAUsageError(self) -> None:
+        ctx = make_ctx(self.tmp, stage.Leg("linux-x64", "linux", "linux", None, packaging=True))
+        with self.assertRaisesRegex(stage.UsageError, "build configuration"):
+            stage.configure_argv(ctx)
+
     def test_SanitizerLegUsesTheAsanCacheFlavor(self) -> None:
         leg = stage.Leg("linux-asan", "linux", "linux", "", job="sanitizers")
         ctx = make_ctx(self.tmp, leg, reporter="github")
@@ -660,9 +692,12 @@ class StepTests(unittest.TestCase):
             rc, lines = self.capture(stage.step_install, ctx)
         self.assertEqual(rc, 0, lines)
         self.assertEqual(len(lines), 1)
-        self.assertRegex(lines[0], r"^ok: install tree: 1 files, sha256 [0-9a-f]{16} ")
+        self.assertRegex(lines[0], r"^ok: install tree: 1 files, sha256 [0-9a-f]{16}, "
+                                   r"install-linux-x64\.tar ")
+        handoff = self.tmp / "artifacts" / "install-linux-x64.tar"
+        self.assertTrue(handoff.is_file(), "the one-file hand-off for the P15 upload")
         (argv,) = self.argvs()
-        self.assertEqual(argv[:2], ["--install", str(self.tmp / "ws" / "build" / "linux")])
+        self.assertEqual(argv[:2], ["--install", str(self.tmp / "ws" / "build" / "linux-x64")])
         self.assertEqual(argv[argv.index("--config") + 1], "Release")
         prefix = self.tmp / "artifacts" / "install" / "linux-x64"
         digest, count = stage.tree_digest(prefix)
@@ -670,6 +705,11 @@ class StepTests(unittest.TestCase):
         self.assertIn("install_digest<<", text)
         value = json.loads(text.splitlines()[1])
         self.assertEqual(value, {"files": count, "leg": "linux-x64", "sha256": digest})
+        self.assertIn("install_sha256_linux_x64<<", text, "per-leg output (CR-8)")
+        self.assertEqual(json.loads(text.splitlines()[4]), digest)
+        import package_archive as pa
+        pa.extract_tar(handoff, self.tmp / "unpacked")
+        self.assertEqual(stage.tree_digest(self.tmp / "unpacked")[0], digest)
 
     @unittest.skipIf(os.name == "nt", POSIX_ONLY)
     def test_InstallWithTestingTreeFails(self) -> None:

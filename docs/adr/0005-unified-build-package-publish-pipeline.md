@@ -219,6 +219,7 @@ Scripts read **only** these names, never `GITHUB_*`, `RUNNER_*` or `teamcity.*`.
 | `CI_BASE_COMMIT` | Diff base for tiering (empty means full) | PR base sha / `github.event.before` | last-built revision, or empty |
 | `CI_PR_SAME_REPO` | `true` when a PR's head branch is in this repository (its push run covered the push tier); `false` or empty otherwise (added 2026-11-14, 0014 Story 04.0 Task 02) | `github.event.pull_request.head.repo.full_name == github.repository` (the only expression policy P10 allows with that context) | empty, or a literal per PR configuration |
 | `CI_PLAN` | The plan step's single-line JSON plan, read back by the run report (added 2026-11-14, 0014 Story 04.0 Task 02) | `needs.plan.outputs.plan` | the plan step's `setParameter` value |
+| `CI_INSTALL_SHA256` | The build job's install-tree digest of the packaging leg; the package stage requires its unpacked hand-off to equal it (added 2026-11-17, 0012 Story 03.0 Task 01; CR-8) | `matrix.install_sha256` of `stage-package.yml`, from `needs.build.outputs.install_sha256_<leg>` in `ci.yml` | the build configuration's digest parameter via a snapshot dependency |
 | `CI_JOB` / `CI_LEG` | Stage job and leg (`linux-x64`, ...) | job id / matrix value | build configuration id / DSL parameter |
 | `CI_WORKSPACE` | Checkout root | `github.workspace` | `%teamcity.build.checkoutDir%` |
 | `CI_TEMP_DIR` | Per-run scratch | `runner.temp` | `%teamcity.build.tempDir%` |

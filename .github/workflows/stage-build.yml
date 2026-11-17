@@ -14,6 +14,18 @@
 # docs-only changes). stage.py re-checks the Q1 tier itself and exits 2 if a
 # scheduled leg is outside it.
 #
+# Packaging legs (linux-x64, windows-x64, macos-arm64; milestone 0012 Story
+# 03.0, ADR 0005 D1/D7) are in the full tier only: every event but a push to a
+# branch other than master. They build the shipped configuration (Release) in
+# build/<leg>, run the same test stage against it, then the Install step
+# writes install/<leg>/ and its one-file hand-off install-<leg>.tar, which is
+# uploaded as the literal path P15 requires. The per-leg job outputs
+# install_sha256_<leg> (the tree digest, set by stage.py) and
+# install_artifact_<leg> (the upload's artifact ID) let the package stage
+# download by ID and prove the tree is the tested one (threat model CR-8).
+# Each output name is unique per leg, so the matrix's combined outputs never
+# overwrite each other.
+#
 # Steps run twice, once per interpreter name: the run: line must be a
 # literal (P6/P7), and the Windows image has `python` but no `python3`.
 name: stage-build
@@ -31,6 +43,25 @@ on:
         type: string
         required: false
         default: ''
+    outputs:
+      install_sha256_linux_x64:
+        description: Install-tree digest of linux-x64 (single-line JSON string)
+        value: ${{ jobs.build.outputs.install_sha256_linux_x64 }}
+      install_sha256_windows_x64:
+        description: Install-tree digest of windows-x64 (single-line JSON string)
+        value: ${{ jobs.build.outputs.install_sha256_windows_x64 }}
+      install_sha256_macos_arm64:
+        description: Install-tree digest of macos-arm64 (single-line JSON string)
+        value: ${{ jobs.build.outputs.install_sha256_macos_arm64 }}
+      install_artifact_linux_x64:
+        description: Artifact ID of install-linux-x64
+        value: ${{ jobs.build.outputs.install_artifact_linux_x64 }}
+      install_artifact_windows_x64:
+        description: Artifact ID of install-windows-x64
+        value: ${{ jobs.build.outputs.install_artifact_windows_x64 }}
+      install_artifact_macos_arm64:
+        description: Artifact ID of install-macos-arm64
+        value: ${{ jobs.build.outputs.install_artifact_macos_arm64 }}
 
 permissions:
   contents: read
@@ -53,12 +84,19 @@ env:
 jobs:
   build:
     name: build (${{ matrix.leg }})
-    runs-on: ${{ matrix.leg == 'windows' && 'windows-2022' || matrix.leg == 'macos' && 'macos-15' || 'ubuntu-24.04' }}
+    runs-on: ${{ matrix.leg == 'windows' && 'windows-2022' || matrix.leg == 'windows-x64' && 'windows-2022' || matrix.leg == 'macos' && 'macos-15' || matrix.leg == 'macos-arm64' && 'macos-15' || 'ubuntu-24.04' }}
     timeout-minutes: 18
     strategy:
       fail-fast: false
       matrix:
-        leg: ${{ fromJSON(inputs.legs || '["linux", "windows", "macos"]') }}
+        leg: ${{ fromJSON(inputs.legs || '["linux", "windows", "macos", "linux-x64", "windows-x64", "macos-arm64"]') }}
+    outputs:
+      install_sha256_linux_x64: ${{ steps.install.outputs.install_sha256_linux_x64 }}
+      install_sha256_windows_x64: ${{ steps.install-win.outputs.install_sha256_windows_x64 }}
+      install_sha256_macos_arm64: ${{ steps.install.outputs.install_sha256_macos_arm64 }}
+      install_artifact_linux_x64: ${{ matrix.leg == 'linux-x64' && steps.upload-install.outputs.artifact-id || '' }}
+      install_artifact_windows_x64: ${{ matrix.leg == 'windows-x64' && steps.upload-install.outputs.artifact-id || '' }}
+      install_artifact_macos_arm64: ${{ matrix.leg == 'macos-arm64' && steps.upload-install.outputs.artifact-id || '' }}
     env:
       CI_JOB: build
       CI_LEG: ${{ matrix.leg }}
@@ -75,7 +113,7 @@ jobs:
       # and `cache_enabled` (false on a tag-event packaging leg, CR-2).
       - name: Prepare
         id: prepare
-        if: matrix.leg != 'windows'
+        if: matrix.leg != 'windows' && matrix.leg != 'windows-x64'
         run: python3 scripts/ci/stage.py build --only prepare
         timeout-minutes: 6
         env:
@@ -83,7 +121,7 @@ jobs:
 
       - name: Prepare (Windows)
         id: prepare-win
-        if: matrix.leg == 'windows'
+        if: (matrix.leg == 'windows' || matrix.leg == 'windows-x64')
         run: python scripts/ci/stage.py build --only prepare
         timeout-minutes: 6
         env:
@@ -107,7 +145,7 @@ jobs:
       # build. Logs stay in $CI_TEMP_DIR/ci-logs.
       - name: Compile
         id: compile
-        if: matrix.leg != 'windows'
+        if: matrix.leg != 'windows' && matrix.leg != 'windows-x64'
         run: python3 scripts/ci/stage.py build --only compile
         timeout-minutes: 15
         env:
@@ -115,7 +153,7 @@ jobs:
 
       - name: Compile (Windows)
         id: compile-win
-        if: matrix.leg == 'windows'
+        if: (matrix.leg == 'windows' || matrix.leg == 'windows-x64')
         run: python scripts/ci/stage.py build --only compile
         timeout-minutes: 15
         env:
@@ -147,7 +185,7 @@ jobs:
       # JUnit files are never uploaded.
       - name: Test
         id: test
-        if: matrix.leg != 'windows'
+        if: matrix.leg != 'windows' && matrix.leg != 'windows-x64'
         run: python3 scripts/ci/stage.py test
         timeout-minutes: 8
         env:
@@ -155,11 +193,45 @@ jobs:
 
       - name: Test (Windows)
         id: test-win
-        if: matrix.leg == 'windows'
+        if: (matrix.leg == 'windows' || matrix.leg == 'windows-x64')
         run: python scripts/ci/stage.py test
         timeout-minutes: 8
         env:
           CI_TEMP_DIR: ${{ runner.temp }}
+
+      # SC2 (packaging legs; every other leg prints one skip: line): after the
+      # tests passed, cmake --install into install/<leg>/, the tree digest as
+      # the step outputs install_digest and install_sha256_<leg> (CR-8), and
+      # the one-file hand-off install-<leg>.tar.
+      - name: Install
+        id: install
+        if: matrix.leg != 'windows' && matrix.leg != 'windows-x64'
+        run: python3 scripts/ci/stage.py build --only install
+        timeout-minutes: 3
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+
+      - name: Install (Windows)
+        id: install-win
+        if: (matrix.leg == 'windows' || matrix.leg == 'windows-x64')
+        run: python scripts/ci/stage.py build --only install
+        timeout-minutes: 3
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+
+      # The tested tree for the package stage: one literal file (P15), kept
+      # one day; the package stage downloads it by artifact ID (CR-8).
+      - name: Upload install tree
+        id: upload-install
+        if: success() && (matrix.leg == 'linux-x64' || matrix.leg == 'windows-x64' || matrix.leg == 'macos-arm64')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        timeout-minutes: 3
+        with:
+          name: install-${{ matrix.leg }}
+          path: ${{ runner.temp }}/artifacts/install-${{ matrix.leg }}.tar
+          include-hidden-files: false
+          if-no-files-found: error
+          retention-days: 1
 
       # Cache writes only from a push to master or the nightly schedule
       # (threat model CR-2, policy P15); never from a PR, a branch or a tag.
@@ -180,7 +252,7 @@ jobs:
       # platform step) is never summarised as PASS.
       - name: Job summary
         id: summary
-        if: success() && steps.checkout.outcome == 'success' && matrix.leg != 'windows'
+        if: success() && steps.checkout.outcome == 'success' && matrix.leg != 'windows' && matrix.leg != 'windows-x64'
         run: python3 scripts/ci/stage.py summary
         timeout-minutes: 2
         env:
@@ -188,7 +260,7 @@ jobs:
 
       - name: Job summary (failed job)
         id: summary-failed
-        if: (failure() || cancelled()) && steps.checkout.outcome == 'success' && matrix.leg != 'windows'
+        if: (failure() || cancelled()) && steps.checkout.outcome == 'success' && matrix.leg != 'windows' && matrix.leg != 'windows-x64'
         run: python3 scripts/ci/stage.py summary --job-failed
         timeout-minutes: 2
         env:
@@ -196,7 +268,7 @@ jobs:
 
       - name: Job summary (Windows)
         id: summary-win
-        if: success() && steps.checkout.outcome == 'success' && matrix.leg == 'windows'
+        if: success() && steps.checkout.outcome == 'success' && (matrix.leg == 'windows' || matrix.leg == 'windows-x64')
         run: python scripts/ci/stage.py summary
         timeout-minutes: 2
         env:
@@ -204,7 +276,7 @@ jobs:
 
       - name: Job summary (failed job, Windows)
         id: summary-failed-win
-        if: (failure() || cancelled()) && steps.checkout.outcome == 'success' && matrix.leg == 'windows'
+        if: (failure() || cancelled()) && steps.checkout.outcome == 'success' && (matrix.leg == 'windows' || matrix.leg == 'windows-x64')
         run: python scripts/ci/stage.py summary --job-failed
         timeout-minutes: 2
         env:

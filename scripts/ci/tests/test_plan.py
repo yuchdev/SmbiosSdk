@@ -78,7 +78,8 @@ class PlanCliTests(unittest.TestCase):
         lines = proc.stdout.splitlines()
         self.assertEqual(len(lines), 2, proc.stdout)
         self.assertRegex(lines[0], r"^ok: changes: full \(no diff base\) ")
-        self.assertRegex(lines[1], r"^ok: plan: tag, full: build linux,windows,macos \| ")
+        self.assertRegex(lines[1], r"^ok: plan: tag, full: build linux,windows,macos,"
+                                   r"linux-x64,windows-x64,macos-arm64 \| ")
         found = outputs(self.tmp)
         self.assertEqual(sorted(found), sorted(plan.OUTPUTS))
         raw = (self.tmp / "out").read_text(encoding="ascii")
@@ -88,7 +89,10 @@ class PlanCliTests(unittest.TestCase):
                 self.assertNotIn("\r", value)
                 self.assertNotIn("\n", value)
                 json.loads(value)
-        self.assertEqual(json.loads(found["build"]), ["linux", "windows", "macos"])
+        self.assertEqual(json.loads(found["build"]), ["linux", "windows", "macos", "linux-x64",
+                                                      "windows-x64", "macos-arm64"])
+        self.assertEqual(json.loads(found["package"]), ["linux-x64", "windows-x64",
+                                                        "macos-arm64"])
         self.assertEqual(json.loads(found["publish"]), [])
         whole = json.loads(found["plan"])
         self.assertEqual(whole["stages"]["publish"], plan.NOT_RUN_UNDEFINED)
@@ -99,7 +103,9 @@ class PlanCliTests(unittest.TestCase):
                             CI_BASE_COMMIT="", CI_PR_SAME_REPO="true")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         found = outputs(self.tmp)
-        self.assertEqual(json.loads(found["build"]), ["windows", "macos"])
+        # ADR 0005 D7: the packaging legs also run here (the push run never runs them).
+        self.assertEqual(json.loads(found["build"]), ["windows", "macos", "linux-x64",
+                                                      "windows-x64", "macos-arm64"])
         self.assertEqual(json.loads(found["sanitizers"]), ["macos-asan"])
         self.assertEqual(json.loads(found["plan"])["legs"]["linux"], plan.NOT_RUN_COVERED)
         self.assertIn("(3 covered by push run)", proc.stdout)
@@ -177,8 +183,13 @@ class DataValidationTests(unittest.TestCase):
 
     def test_UnknownOrPendingTierLeg(self) -> None:
         self.assertRefused(_data(lambda d: d["tiers"]["full"].append("solaris")))
-        self.assertRefused(_data(lambda d: d["tiers"]["full"].append("linux-x64")))
-        self.assertRefused(_data(lambda d: d["tiers"]["push_branch"].append("linux-x64")))
+        # No leg is pending since the 0012 Release ruling (status.md 2026-11-16), so
+        # the pending refusal is exercised on a leg marked pending here.
+        def pending(d) -> None:
+            d["legs"]["linux-x64"]["pending"] = "not decided"
+        self.assertRefused(_data(lambda d: (pending(d), d["tiers"]["full"].append("linux-x64"))))
+        self.assertRefused(_data(lambda d: (pending(d),
+                                            d["tiers"]["push_branch"].append("linux-x64"))))
         self.assertRefused(_data(lambda d: d["legs"]["linux"].update(job="deploy")))
         self.assertRefused(_data(lambda d: d["tiers"].pop("push_branch")))
 
