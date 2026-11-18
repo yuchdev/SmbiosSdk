@@ -32,7 +32,6 @@ Run: ``python3 scripts/ci/run_tests.py``.
 
 from __future__ import annotations
 
-import ast
 import base64
 import contextlib
 import functools
@@ -47,17 +46,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from unittest import mock
 
-from ci_test_support import CI_DIR
+from ci_test_support import CI_DIR, DESTINATIONS_DIR, used_names
 
 import job_summary  # noqa: E402
-import publish_github_release as pgr  # noqa: E402
-import publish_vcpkg_registry as pvr  # noqa: E402
+from destinations import github_release as pgr  # noqa: E402
+from destinations import vcpkg_registry as pvr  # noqa: E402
 import registry_update as ru  # noqa: E402
+import destinations  # noqa: E402
 import stage  # noqa: E402
 from reporters import get_reporter  # noqa: E402
-from test_publish_github_release import (CANARY, COMMIT, LEAK_FORMS, OTHER, REPO,  # noqa: E402
-                                         RUN_ID, TAG, VERSION, FakeGitHub, _FakeCase,
-                                         stage_env)
+from test_publish_github_release import (CANARY, COMMIT, LEAK_FORMS, OTHER, PHASE_JOBS,  # noqa: E402
+                                         REPO, RUN_ID, TAG, VERSION, FakeGitHub, _FakeCase,
+                                         job_for, stage_env)
 
 REPO_ROOT = CI_DIR.parents[1]
 BRANCH = f"registry/v{VERSION}"
@@ -220,6 +220,11 @@ class _RegistryCase(_FakeCase):
         return self.prepared
 
 
+#: The stage-publish.yml job of each vcpkg-registry phase (its ``CI_JOB``, Task 05).
+REGISTRY_PHASE_JOBS: Dict[str, str] = {"branch": "registry-pr", "preflight": "registry-pr",
+                                       "prepare": "registry-prepare"}
+
+
 def registry_file(case: _FakeCase, enabled: bool) -> Path:
     path = case.tmp / "publish_destinations.json"
     path.write_text(json.dumps({"schema": 1, "destinations": [
@@ -251,6 +256,8 @@ def registry_stage(case: _RegistryCase, args: List[str], *, enabled: bool = True
     out, err = io.StringIO(), io.StringIO()
     bound = functools.partial(pgr.GitHubApi, policy=case.fake.policy(), timeout_s=10)
     full = stage_env(case, CI_REGISTRY_PREPARED=case.prepared, CI_WORKSPACE=str(REPO_ROOT))
+    full.update(job_for(args, REGISTRY_PHASE_JOBS if destination == "vcpkg-registry"
+                        else PHASE_JOBS))
     full.update(env)
     with mock.patch.dict(os.environ, full, clear=True), \
             mock.patch.object(pvr, "GitHubApi", bound), \
@@ -282,22 +289,35 @@ class NoToolchainTests(_RegistryCase):
                  "multiprocessing", "shlex", "exec", "eval", "__import__", "registry_prepare",
                  "consumer_smoke", "vcpkg_registry_smoke", "bootstrap_vcpkg"}
 
+    #: Task 05: the module moved to scripts/ci/destinations/; it imports the
+    #: package __init__ and github_release, both scanned (the latter by
+    #: test_publish_github_release.NoChildProcessTests with the same scan).
+    SCANNED = (DESTINATIONS_DIR / "vcpkg_registry.py", CI_DIR / "registry_update.py",
+               DESTINATIONS_DIR / "__init__.py", DESTINATIONS_DIR / "github_release.py")
+
     def test_CredentialedModulesImportNoChildProcessOrToolchain(self) -> None:
-        for name in ("publish_vcpkg_registry.py", "registry_update.py"):
-            with self.subTest(module=name):
-                tree = ast.parse((CI_DIR / name).read_text(encoding="utf-8"))
-                used = set()
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.Import):
-                        used |= {a.name.split(".")[0] for a in node.names}
-                    elif isinstance(node, ast.ImportFrom) and node.module:
-                        used.add(node.module.split(".")[0])
-                    elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-                        name_ = f"{node.value.id}.{node.attr}"
-                        used.add(name_[:7] if name_.startswith("os.exec") else name_)
-                    elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                        used.add(node.func.id)
+        for path in self.SCANNED:
+            with self.subTest(module=path.name):
+                used = used_names(path.read_text(encoding="utf-8"))
                 self.assertEqual(used & self.FORBIDDEN, set())
+
+    def test_ScanTargetsTheImportedModuleAndCatchesAPlantedToolchain(self) -> None:
+        """Binding proof (Task 05): the scanned file is the one stage.py imports, and the scan fires.
+
+        Appending a toolchain import to the shipped source must be reported,
+        and the old top-level ``publish_vcpkg_registry.py`` must be gone.
+        """
+        import destinations
+        module = destinations.load("vcpkg-registry")
+        self.assertEqual(Path(module.__file__).resolve(), self.SCANNED[0].resolve())
+        self.assertFalse((CI_DIR / "publish_vcpkg_registry.py").exists())
+        source = self.SCANNED[0].read_text(encoding="utf-8")
+        for planted, name in (("import registry_prepare", "registry_prepare"),
+                              ("import bootstrap_vcpkg", "bootstrap_vcpkg"),
+                              ("from ci_step import run_step", "ci_step"),
+                              ("import subprocess", "subprocess")):
+            with self.subTest(planted=planted):
+                self.assertIn(name, used_names(source + "\n" + planted + "\n") & self.FORBIDDEN)
 
     def test_FullBranchRunStartsNoChildProcess(self) -> None:
         def no_child(*_a: Any, **_k: Any) -> None:
@@ -566,7 +586,7 @@ class DryRunTests(_RegistryCase):
         def no_network(*_a: Any, **_k: Any) -> None:
             raise AssertionError("network or credential used in a dry run")
         with mock.patch("urllib.request.OpenerDirector.open", side_effect=no_network), \
-                mock.patch.object(pgr, "Secret", side_effect=no_network), \
+                mock.patch.object(destinations, "Secret", side_effect=no_network), \
                 mock.patch.object(subprocess, "Popen", side_effect=no_network):
             run = registry_stage(self, ["--dry-run"], enabled=False)
         self.assertEqual(run.rc, 0, run.text)

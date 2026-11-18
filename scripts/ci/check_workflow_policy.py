@@ -47,6 +47,7 @@ non-CI ``--verify-tags`` mode.
 from __future__ import annotations
 
 import argparse
+import ast
 import datetime
 import fnmatch
 import json
@@ -58,7 +59,8 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
+from typing import (Any, Callable, Dict, FrozenSet, Iterable, Iterator, List, Optional,
+                    Sequence, Set, Tuple)
 
 _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
@@ -168,6 +170,25 @@ LEGACY_TAG_SAMPLES: Tuple[str, ...] = ("1.0.2.202611131", "1.2.3.4")
 #: download-artifact by ``artifact-ids``.
 _PUBLISH_RUN = re.compile(r"^python3 scripts/ci/stage\.py publish --destination "
                           r"[a-z0-9][a-z0-9-]{0,39}( --only [a-z][a-z-]{0,19})?$")
+#: P12 (0012 Story 04.0 Task 05; ADR 0005 D9): the one run: line of a
+#: permission-class matrix job (``"matrix": true`` in publish_jobs.json); the
+#: destination comes from the matrix row through this exact env: entry.
+MATRIX_PUBLISH_RUN = "python3 scripts/ci/stage.py publish"
+MATRIX_DESTINATION_ENV = ("CI_DESTINATION", EXPR_OPEN + " matrix.destination " + EXPR_CLOSE)
+#: P12 (Task 05; threat model 2026-11-18 RP-2, requirement 15): the
+#: permission classes whose credential is a token held in-process, so their
+#: destination modules (and every scripts/ci module they import) must start no
+#: child process and evaluate no code. The ``oidc`` class runs the pinned aws
+#: CLI through the step runner (ADR 0005 D9) and is exempt.
+IN_PROCESS_CLASSES: Tuple[str, ...] = ("repo-write", "token-only")
+#: Names whose import (or attribute use, or call) makes a module start a child
+#: process or evaluate code (the same set as the destination AST unit tests).
+CHILD_PROCESS_NAMES: FrozenSet[str] = frozenset({
+    "subprocess", "ci_step", "os.system", "os.popen", "os.exec", "os.spawn", "pty",
+    "multiprocessing", "shlex", "exec", "eval", "__import__", "registry_prepare",
+    "consumer_smoke", "vcpkg_registry_smoke", "bootstrap_vcpkg"})
+#: P12 (requirement 17): the binary-cache policy each tier implies (CR-2).
+BINARY_CACHE_POLICY: Dict[str, str] = {"release": "none-only", "staging": "any"}
 PUBLISH_STEP_ACTIONS: Tuple[str, ...] = ("actions/checkout", "actions/download-artifact")
 #: P12 (0012 Story 04.0 Task 03; RP-2, constraint 1): publish phases that run the
 #: toolchain (vcpkg, a compiler, a consumer test) and so belong in an
@@ -1535,6 +1556,8 @@ class _WorkflowCheck:
         if _uses_secrets(outside):
             self.v(job_id, "P8", "secrets only in the publish step's env:",
                    "job-level secrets reference")
+        entry = self.policy.publish_job(self.name, job_id) or {}
+        matrix = entry.get("matrix") is True
         runs = 0
         for index, step in self.steps(job):
             if not isinstance(step, dict):
@@ -1542,16 +1565,32 @@ class _WorkflowCheck:
             loc = f"{job_id}/{_step_label(step, index)}"
             if "run" in step:
                 body = " ".join(str(step["run"]).split())
-                if _PUBLISH_RUN.fullmatch(body):
+                env = step.get("env") if isinstance(step.get("env"), dict) else {}
+                if matrix and body == MATRIX_PUBLISH_RUN:
+                    # Task 05 (D9): a class matrix job takes its destination
+                    # from the row, never from a literal or another context.
+                    runs += 1
+                    key, value = MATRIX_DESTINATION_ENV
+                    if " ".join(str(env.get(key, "")).split()) != value:
+                        self.v(loc, "P12", f"{key}: matrix.destination in a class matrix job",
+                               "missing or another value")
+                elif not matrix and _PUBLISH_RUN.fullmatch(body):
                     runs += 1
                     phase = body.split(" --only ", 1)[1] if " --only " in body else ""
                     if phase in UNPRIVILEGED_PUBLISH_PHASES:
                         self.v(loc, "P12", "no toolchain phase in a credentialed job (RP-2)",
                                f"--only {phase}")
+                    bound = entry.get("destination")
+                    want = (f"{MATRIX_PUBLISH_RUN} --destination {bound} --only "
+                            f"{entry.get('phase')}") if bound else None
+                    if want is not None and phase not in UNPRIVILEGED_PUBLISH_PHASES \
+                            and body != want:
+                        self.v(loc, "P12", "the destination and phase publish_jobs.json binds",
+                               body[len(MATRIX_PUBLISH_RUN):][:60] or "none")
                 else:
-                    self.v(loc, "P12", "only one stage.py publish --destination run: step",
+                    self.v(loc, "P12", "only one stage.py publish --destination run: step"
+                           if not matrix else "only one stage.py publish run: step",
                            body[:60] or "empty")
-                env = step.get("env") if isinstance(step.get("env"), dict) else {}
                 for key, value in env.items():
                     if _uses_secrets(value) and not str(key).startswith(PUBLISH_CREDENTIAL_PREFIX):
                         self.v(loc, "P8", f"secrets only under {PUBLISH_CREDENTIAL_PREFIX}* env "
@@ -2014,6 +2053,7 @@ def check_publish_registry(policy: Policy, workflows_dir: Path) -> List[Violatio
                 if entry.get("file") != "stage-publish.yml":
                     out.append(Violation(jobs_file, loc, "P12", "file stage-publish.yml",
                                          entry.get("file")))
+                out += _job_binding(jobs_file, loc, entry, policy)
                 cls = entry.get("permission_class")
                 if cls not in PERMISSION_CLASSES:
                     out.append(Violation(jobs_file, loc, "P12", "known permission class", cls))
@@ -2027,18 +2067,23 @@ def check_publish_registry(policy: Policy, workflows_dir: Path) -> List[Violatio
                 out.append(Violation(jobs_file, loc, "P12", "listed job exists",
                                      f"{entry.get('file')}:{entry.get('job')} missing"))
 
+    names = {str(e.get("name")) for e in policy.destinations if isinstance(e, dict)}
+    bound = {str(j.get("destination")) for j in policy.publish_jobs if j.get("destination")}
     for index, entry in enumerate(policy.destinations):
         if not isinstance(entry, dict):
             out.append(Violation(dest_file, f"destinations[{index}]", "P12", "an object",
                                  type(entry).__name__))
             continue
-        if entry.get("enabled") is not True:
-            continue
+        # Task 05: every entry is checked, enabled or not; a disabled entry
+        # still names the module, class and jobs it will use once enabled.
         name = str(entry.get("name", ""))
         loc = name or f"destinations[{index}]"
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
             out.append(Violation(dest_file, loc, "P12", "name [a-z0-9-]", name or "missing"))
             continue
+        if not isinstance(entry.get("enabled"), bool):
+            out.append(Violation(dest_file, loc, "P12", "enabled true or false",
+                                 entry.get("enabled")))
         module = policy.destinations_dir / (name.replace("-", "_") + ".py")
         if not module.is_file():
             out.append(Violation(dest_file, loc, "P12", "existing module",
@@ -2052,17 +2097,159 @@ def check_publish_registry(policy: Policy, workflows_dir: Path) -> List[Violatio
         if entry.get("environment") != tier:
             out.append(Violation(dest_file, loc, "P12", f"environment {tier}",
                                  entry.get("environment")))
-        bad = [c for c in _items(entry.get("credentials"))
-               if not re.fullmatch(r"CI_PUBLISH_[A-Z0-9_]+", str(c))]
+        if tier in BINARY_CACHE_POLICY and "binary_cache_policy" in entry \
+                and entry["binary_cache_policy"] != BINARY_CACHE_POLICY[tier]:
+            out.append(Violation(dest_file, loc, "P12",
+                                 f"binary_cache_policy {BINARY_CACHE_POLICY[tier]} ({tier} "
+                                 "tier, CR-2)", entry["binary_cache_policy"]))
+        credentials = [str(c) for c in _items(entry.get("credentials"))]
+        bad = [c for c in credentials if not re.fullmatch(r"CI_PUBLISH_[A-Z0-9_]+", c)]
         if bad:
             out.append(Violation(dest_file, loc, "P12", "credentials named CI_PUBLISH_*",
-                                 ", ".join(map(str, bad))))
-        if tier in TIERS and cls in PERMISSION_CLASSES and not any(
-                j.get("tier") == tier and j.get("permission_class") == cls
-                for j in policy.publish_jobs):
-            out.append(Violation(dest_file, loc, "P12",
-                                 f"a {tier}-tier {cls} job in publish_jobs.json", "none"))
+                                 ", ".join(bad)))
+        if module.is_file() and cls in IN_PROCESS_CLASSES:
+            hit = _child_process_use(module, policy.destinations_dir.parent)
+            if hit:
+                out.append(Violation(dest_file, loc, "P12",
+                                     f"no child process in a {cls} destination (RP-2)", hit))
+        if tier not in TIERS or cls not in PERMISSION_CLASSES:
+            continue
+        if name in bound:
+            jobs = [j for j in policy.publish_jobs if j.get("destination") == name]
+        else:
+            jobs = [j for j in policy.publish_jobs if j.get("matrix") is True
+                    and j.get("tier") == tier and j.get("permission_class") == cls]
+            if not jobs:
+                out.append(Violation(dest_file, loc, "P12",
+                                     f"a {tier}-tier {cls} job in publish_jobs.json", "none"))
+        for job in jobs:
+            root = _parsed_workflow(parsed, workflows_dir, str(job.get("file")))
+            spec = _job_spec(root, str(job.get("job")))
+            if spec is None:
+                continue  # "listed job exists" reports it
+            extra = reachable([spec.get("if")]) - TIER_EVENTS[tier]
+            if extra:
+                out.append(Violation(dest_file, loc, "P12",
+                                     f"{tier} destination reachable from "
+                                     f"{TIER_GUARD_TEXT[tier]}",
+                                     f"{job.get('job')}: {_reach_text(extra)}"))
+            # Mapped at job or step level: *where* a secret may be mapped is P8's
+            # rule (step env: only); this checks that the job maps it at all.
+            mapped = _publish_step_env(spec) | (
+                {str(k) for k in spec["env"]} if isinstance(spec.get("env"), dict) else set())
+            missing = [c for c in credentials if c not in mapped]
+            if missing:
+                out.append(Violation(dest_file, loc, "P12",
+                                     f"credentials mapped in {job.get('job')}'s publish step",
+                                     ", ".join(missing)))
+    for job in policy.publish_jobs:
+        destination = job.get("destination")
+        if destination is not None and str(destination) not in names:
+            out.append(Violation(jobs_file, f"jobs/{job.get('job')}", "P12",
+                                 "a destination publish_destinations.json registers",
+                                 destination))
+    seen: Set[Tuple[str, str]] = set()
+    for job in policy.publish_jobs:
+        if job.get("matrix") is True:
+            key = (str(job.get("tier")), str(job.get("permission_class")))
+            if key in seen:
+                out.append(Violation(jobs_file, f"jobs/{job.get('job')}", "P12",
+                                     "one matrix job per tier and permission class",
+                                     "/".join(key)))
+            seen.add(key)
     return out
+
+
+def _parsed_workflow(cache: Dict[str, Any], workflows_dir: Path, file: str) -> Any:
+    if file not in cache:
+        try:
+            cache[file] = load_yaml((workflows_dir / file).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, YamlSubsetError):
+            cache[file] = None
+    return cache[file]
+
+
+def _job_spec(root: Any, job: str) -> Optional[YMap]:
+    jobs = root.get("jobs") if isinstance(root, dict) else None
+    spec = jobs.get(job) if isinstance(jobs, dict) else None
+    return spec if isinstance(spec, dict) else None
+
+
+def _publish_step_env(job: YMap) -> Set[str]:
+    """The env: keys of the job's ``stage.py publish`` step."""
+    for step in _items(job.get("steps")):
+        if isinstance(step, dict) and " ".join(str(step.get("run", "")).split()).startswith(
+                MATRIX_PUBLISH_RUN):
+            env = step.get("env")
+            return {str(k) for k in env} if isinstance(env, dict) else set()
+    return set()
+
+
+def _job_binding(jobs_file: str, loc: str, entry: Dict[str, Any], policy: Policy
+                 ) -> List[Violation]:
+    """Task 05 (D9): a publish job is bound to one destination and phase, or is its class's matrix job."""
+    destination, phase, matrix = (entry.get("destination"), entry.get("phase"),
+                                  entry.get("matrix", False))
+    if matrix is True and destination is None and phase is None:
+        return []
+    if matrix in (False, None) and isinstance(destination, str) and isinstance(phase, str) \
+            and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", destination) \
+            and re.fullmatch(r"[a-z][a-z-]{0,19}", phase) \
+            and phase not in UNPRIVILEGED_PUBLISH_PHASES:
+        dest = next((d for d in policy.destinations if isinstance(d, dict)
+                     and d.get("name") == destination), None)
+        if dest is not None and (dest.get("tier"), dest.get("permission_class")) != \
+                (entry.get("tier"), entry.get("permission_class")):
+            return [Violation(jobs_file, loc, "P12", "the bound destination's tier and class",
+                              f"{dest.get('tier')}/{dest.get('permission_class')}")]
+        return []
+    return [Violation(jobs_file, loc, "P12",
+                      "destination and a privileged phase, or matrix: true (ADR 0005 D9)",
+                      "neither or both")]
+
+
+def _child_process_use(module: Path, scripts_dir: Path) -> Optional[str]:
+    """The first child-process or code-evaluation name ``module`` uses, following local imports.
+
+    Follows ``import x`` / ``from x import ...`` / ``from destinations import
+    x`` of modules that exist under ``scripts_dir`` (transitively), so a
+    helper cannot hide a ``subprocess`` import (RP-2).
+    """
+    seen: Set[Path] = set()
+    todo = [module]
+    while todo:
+        path = todo.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, SyntaxError, ValueError):
+            return f"{path.name}: unparseable"
+        for node in ast.walk(tree):
+            used: List[str] = []
+            local: List[str] = []
+            if isinstance(node, ast.Import):
+                used += [a.name for a in node.names]
+                local += [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                used.append(node.module)
+                local.append(node.module)
+                local += [f"{node.module}.{a.name}" for a in node.names]
+            elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+                used.append(f"{node.value.id}.{node.attr}")
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                used.append(node.func.id)
+            for name in used:
+                head = name.split(".")[0]
+                for candidate in (name, head, name[:7], name[:8]):
+                    if candidate in CHILD_PROCESS_NAMES:
+                        return f"{path.name}: {candidate}"
+            for name in local:
+                target = scripts_dir.joinpath(*name.split(".")).with_suffix(".py")
+                if target.is_file():
+                    todo.append(target)
+    return None
 
 
 def check_budgets(policy: Policy) -> List[Violation]:

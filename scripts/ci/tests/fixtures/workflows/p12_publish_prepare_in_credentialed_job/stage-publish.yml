@@ -24,6 +24,9 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    strategy:
+      matrix:
+        destination: [s3-staging]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,9 +34,10 @@ jobs:
         with:
           persist-credentials: false
       - name: Publish
-        run: python3 scripts/ci/stage.py publish --destination s3-staging
+        run: python3 scripts/ci/stage.py publish
         timeout-minutes: 5
         env:
+          CI_DESTINATION: ${{ matrix.destination }}
           CI_PUBLISH_S3_ROLE: ${{ secrets.S3_ROLE }}
   publish-release-repo-write:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The ``github-release`` publish destination (milestone 0012 Story 04.0 Task 02; ADR 0005 D6, D9).
+"""The ``github-release`` publish destination (milestone 0012 Story 04.0 Tasks 02, 05; ADR 0005 D6, D9).
 
 Creates one **draft** GitHub Release for a ``v*`` tag, uploads exactly the
 files of the anchored ``dist/manifest.json`` plus the manifest itself, re-reads
@@ -7,7 +7,11 @@ them, and later **promotes** the draft. Run only through
 ``python3 scripts/ci/stage.py publish --destination github-release --only
 draft|promote`` (the ``release-draft``/``release-promote`` jobs of
 ``stage-publish.yml``); the inputs arrive already validated as
-:class:`publish_inputs.ReleaseInputs`.
+:class:`publish_inputs.ReleaseInputs`. Task 05 moved this module from
+``scripts/ci/publish_github_release.py`` behind the D9 interface of
+:mod:`destinations` (:func:`validate`, :func:`publish`, :func:`check_published`);
+``stage.py`` calls nothing else. Permission class ``repo-write``, tier
+``release``.
 
 Binding rules (threat model ``docs/security/2026-11-18-release-and-publish-automation.md``,
 standing constraints 2, 3, 5, 7 and findings RP-1, RP-5, RP-6, RP-8, RP-12):
@@ -67,6 +71,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, FrozenSet, List, Mapping, Optional, Sequence, Tuple
 
 import publish_inputs as pin
+from destinations import Env, Result, Secret
 
 #: Registry key (ADR 0005 D9).
 NAME = "github-release"
@@ -107,27 +112,6 @@ _STATUS_WORDS = ("ahead", "identical", "behind", "diverged")
 
 class PublishError(Exception):
     """A refused or failed publish step; the message is one value-free RC1 line."""
-
-
-class Secret:
-    """A credential that never renders: ``repr``/``str`` are ``<redacted>`` (RP-8)."""
-
-    __slots__ = ("_value",)
-
-    def __init__(self, value: str) -> None:
-        self._value = value
-
-    def __repr__(self) -> str:
-        return "<redacted>"
-
-    __str__ = __repr__
-
-    def __bool__(self) -> bool:
-        return bool(self._value)
-
-    def reveal(self) -> str:
-        """Return the value (used only for the ``Authorization`` header)."""
-        return self._value
 
 
 @dataclass(frozen=True)
@@ -773,5 +757,72 @@ def post_publish(inputs: pin.ReleaseInputs, repository: str, log: Log) -> str:
     return post_publish_check.post_publish(inputs, repository, log)
 
 
-#: The ADR 0005 D9 name of the post-publish check.
-check_published = post_publish
+# ---------------------------------------------------------------------------
+# The ADR 0005 D9 interface (Task 05): the only members stage.py calls
+# ---------------------------------------------------------------------------
+
+def validate(manifest: pin.ReleaseInputs, env: Env) -> None:
+    """D9 ``validate``: a release tag binding and a well-formed repository; no network.
+
+    The manifest, its files, the tag/commit binding and the cold-build rule
+    were already checked by ``publish_inputs`` (constraints 4-6); this adds
+    what only this destination needs.
+
+    Raises:
+        PublishError: No release tag (this destination is ``release`` tier
+            only), or ``CI_REPOSITORY`` is set but malformed.
+    """
+    if not pin.TAG.fullmatch(manifest.tag or ""):
+        raise PublishError(f"{NAME}: expected a release tag v<X.Y.Z>[-<pre>] -> actual none "
+                           "(release tier only)")
+    repository = env.get("CI_REPOSITORY")
+    if repository and not REPOSITORY.fullmatch(repository):
+        raise PublishError("CI_REPOSITORY: expected owner/name -> actual <rejected>")
+
+
+def publish(manifest: pin.ReleaseInputs, artifact_dir: Any, env: Env, dry_run: bool) -> Result:
+    """D9 ``publish``: run phase ``env.phase`` (``preflight``, ``draft`` or ``promote``).
+
+    ``artifact_dir`` is unused: ``manifest.assets`` are the verified files
+    (constraint 4). A dry run makes no request and never touches
+    ``env.credentials``; it returns the exact reads and writes as ``lines``.
+
+    Raises:
+        PublishError: A refused or failed request, or an unknown phase.
+    """
+    del artifact_dir
+    validate(manifest, env)
+    repository = env.get("CI_REPOSITORY") or "<owner>/<repo>"
+    if dry_run:
+        lines = dry_run_plan(manifest, repository, env.phase)
+        return Result(f"{len(manifest.assets)} assets for release {manifest.tag}",
+                      (f"https://github.com/{repository}/releases/tag/{manifest.tag}",),
+                      tuple(lines), 0)
+    api = GitHubApi(env.secret("CI_PUBLISH_TOKEN"), env.get("CI_REPOSITORY"))
+    if env.phase == "preflight":
+        settings_preflight(api, env.log)
+        commit_preflight(api, manifest)
+        summary = (f"preflight {manifest.tag}: tag and master ancestry bind "
+                   f"{manifest.commit[:12]}, {len(manifest.assets)} assets match the manifest")
+    elif env.phase == "draft":
+        summary = draft(api, manifest, env.log)
+    elif env.phase == "promote":
+        summary = promote(api, manifest, env.log)
+    else:
+        raise PublishError(f"{NAME}: expected phase preflight, draft or promote -> actual "
+                           "another phase")
+    return Result(summary, (f"https://github.com/{api.repository}/releases/tag/{manifest.tag}",),
+                  (), len(api.calls))
+
+
+def check_published(manifest: pin.ReleaseInputs, env: Env) -> str:
+    """D9 ``check_published``: the anonymous post-publish check (Task 04, constraint 11).
+
+    Takes no credential (``env.credentials`` is never read; ``stage.py`` runs
+    this phase only in a job that holds none).
+
+    Raises:
+        post_publish_check.CheckError: The first discrepancy; not a rollback.
+    """
+    validate(manifest, env)
+    return post_publish(manifest, env.get("CI_REPOSITORY"), env.log)

@@ -150,6 +150,14 @@ NAMES: Dict[str, EnvName] = {
                 "matrix.prepared (stage-publish.yml: needs.registry-prepare.outputs."
                 "registry_prepared)",
                 "the prepare configuration's output parameter, via a snapshot dependency"),
+        EnvName("CI_DESTINATION",
+                "the publish destination of a permission-class matrix job (a registry key of "
+                "publish_destinations.json); stage.py publish reads it when --destination is "
+                "absent and checks the job against publish_jobs.json (milestone 0012 Story "
+                "04.0 Task 05; ADR 0005 D9)",
+                "matrix.destination (stage-publish.yml publish-<tier>-<class> jobs; the rows "
+                "come from the plan job's publish_<class> output)",
+                "a parameter of the class's publish configuration"),
         EnvName("CI_REPOSITORY", "owner/name of the repository a publish destination writes to",
                 "github.repository", "a literal parameter on the publish configuration"),
         EnvName("CI_WORKSPACE", "checkout root",

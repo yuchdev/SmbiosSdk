@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import re
 import secrets
-from typing import Dict, Final, FrozenSet, List, Mapping, Protocol, Sequence, Tuple
+from typing import Dict, Final, FrozenSet, List, Mapping, Optional, Protocol, Sequence, Tuple
 
 import env_names
 
@@ -288,6 +288,19 @@ def output_delimiter(value_line: str) -> str:
 
 
 BACKEND_NAMES: Tuple[str, ...] = ("github", "teamcity", "plain")
+
+
+def take_oidc_request() -> Optional[Tuple[str, str]]:
+    """Remove the platform's OIDC token-service request from ``os.environ`` and return it.
+
+    The ``oidc`` publish class (ADR 0005 D9; 0012 Story 04.0 Task 05)
+    exchanges it for an ID token itself. Only the GitHub backend knows such a
+    request (``reporters.github``); TeamCity has none, so this returns
+    ``None`` there and the destination refuses (no stored-key fallback).
+    ``stage.py publish`` calls it first, with the credentials.
+    """
+    from reporters.github import take_oidc_request as take
+    return take()
 
 
 def get_reporter(name: str | None) -> Reporter:

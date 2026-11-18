@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 import secrets
 import sys
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import env_names
 from reporters import (ANNOTATION_MAX, clean_text, fail_text, info_text, ok_line,
@@ -32,11 +32,29 @@ from reporters import (ANNOTATION_MAX, clean_text, fail_text, info_text, ok_line
 #: ``reporters.child_environment`` denies both (CR-5).
 _PLATFORM_OUTPUT_VAR = "GITHUB_OUTPUT"
 _PLATFORM_SUMMARY_VAR = "GITHUB_STEP_SUMMARY"
+#: The runner's OIDC token service (set only in a job granted ``id-token: write``).
+#: Like the file-command variables they exist only as process environment, so
+#: the adapter cannot map them; :func:`take_oidc_request` hands them to the
+#: ``oidc`` publish class (milestone 0012 Story 04.0 Task 05, ADR 0005 D9).
+#: Children never see either name (``reporters.child_environment``, CR-5).
+_PLATFORM_OIDC_URL_VAR = "ACTIONS_ID_TOKEN_REQUEST_URL"
+_PLATFORM_OIDC_TOKEN_VAR = "ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
 
 def _target(neutral: str, platform_var: str) -> str:
     """Return the neutral name's value, else the runner's own variable, else ``""``."""
     return env_names.get(neutral) or os.environ.get(platform_var, "")
+
+
+def take_oidc_request() -> Optional[Tuple[str, str]]:
+    """Remove the runner's OIDC request variables from ``os.environ``; return ``(url, token)``.
+
+    Both are removed whatever their values, so nothing started later sees
+    them. ``None`` unless both were set (a job without ``id-token: write``).
+    """
+    url = os.environ.pop(_PLATFORM_OIDC_URL_VAR, "")
+    token = os.environ.pop(_PLATFORM_OIDC_TOKEN_VAR, "")
+    return (url, token) if url and token else None
 
 
 def escape_annotation(text: str) -> str:

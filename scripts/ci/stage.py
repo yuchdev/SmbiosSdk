@@ -4,7 +4,7 @@
 One workflow step is one invocation of this command::
 
     python3 scripts/ci/stage.py <lint|build|test|package|verify> [--leg <leg>] [--only <step>]
-    python3 scripts/ci/stage.py publish --destination <name> --only <phase> | --dry-run
+    python3 scripts/ci/stage.py publish [--destination <name>] [--only <phase>] [--dry-run]
     python3 scripts/ci/stage.py summary [--leg <leg>] [--job-failed]
     python3 scripts/ci/stage.py report
     python3 scripts/ci/stage.py plan
@@ -85,9 +85,13 @@ legs only; it never configures or builds; stops at the first failing step):
     each package job exports ``archive_sha256_<leg>``. The build job's
     ``compile`` step exports ``binary_cache_<leg>`` on a packaging leg:
     ``none`` only for ``VCPKG_BINARY_SOURCES=clear`` with 0 restored packages.
-``publish`` (milestone 0012 Story 04.0 Tasks 02-03; ADR 0005 D6/D9; not
-leg-based; :func:`run_publish`): ``--destination <name>`` names an entry of
-``publish_destinations.json``; ``--only`` is one phase per job: ``preflight``
+``publish`` (milestone 0012 Story 04.0 Tasks 02-05; ADR 0005 D6/D9; not
+leg-based; :func:`run_publish`): ``--destination <name>`` (or, in a permission-
+class matrix job, ``CI_DESTINATION``) names an entry of
+``publish_destinations.json`` whose module in ``scripts/ci/destinations/`` is
+driven only through the D9 interface (Task 05; a single-phase destination such
+as ``s3-staging`` takes no ``--only``); for a phased destination ``--only`` is
+one phase per job: ``preflight``
 (settings drift + tag/commit binding; writes nothing), ``draft``
 (``release-draft``) or ``promote`` (``release-promote``) for
 ``github-release``; ``prepare`` (``registry-prepare``: no credential, runs git,
@@ -102,8 +106,10 @@ is not cold-built (``CI_BUILD_BINARY_CACHE``), and a missing verify result
 ``verify-gate`` job). ``CI_PUBLISH_TOKEN`` leaves ``os.environ`` before anything
 else runs and no child process is started. ``post-publish`` (``github-release``,
 Task 04) is unprivileged like ``prepare``: refused if a credential is set,
-anonymous requests only (``post_publish_check.py``). Rules:
-``publish_inputs.py`` and ``publish_github_release.py``.
+anonymous requests only (``post_publish_check.py``). A real privileged phase
+must run in the job ``publish_jobs.json`` binds it to (``CI_JOB``,
+:func:`check_job_binding`). Rules: ``publish_inputs.py`` and
+``destinations/``.
 ``verify`` (milestone 0012 Story 04.0 Task 04; ADR 0005 D1/D4/D6/D7; packaging
 legs, each on a runner of its own OS/arch; stops at the first failing step):
     ``deps`` - pinned tools (``pkgconf`` too on Windows), RC4 header, pinned
@@ -189,7 +195,6 @@ if _HERE not in sys.path:
 import argparse  # noqa: E402
 import contextlib  # noqa: E402
 import hashlib  # noqa: E402
-import inspect  # noqa: E402
 import json  # noqa: E402
 import platform  # noqa: E402
 import re  # noqa: E402
@@ -2007,27 +2012,29 @@ def run_plan(reporter: Reporter) -> int:
 
 
 # ---------------------------------------------------------------------------
-# publish (milestone 0012 Story 04.0 Task 02; ADR 0005 D6/D9)
+# publish (milestone 0012 Story 04.0 Tasks 02-05; ADR 0005 D6/D9)
 # ---------------------------------------------------------------------------
 
 #: The publish destination registry (ADR 0005 D9; policy P12).
 DESTINATIONS_FILE: Final = Path(_HERE) / "publish_destinations.json"
-#: Destination modules, until 0012 Story 04.0 Task 05 moves them to
-#: ``scripts/ci/destinations/<name>.py`` behind the D9 interface.
-DESTINATION_MODULES: Final[Dict[str, str]] = {"github-release": "publish_github_release",
-                                               "vcpkg-registry": "publish_vcpkg_registry"}
+#: The publish-stage jobs (policy P8/P12); a real privileged phase must run in one.
+PUBLISH_JOBS_FILE: Final = Path(_HERE) / "publish_jobs.json"
+#: The package the destination modules are imported from (D9: one module per
+#: registry entry, ``<name>`` with ``-`` as ``_``; tests substitute a fake package).
+DESTINATIONS_PACKAGE: Final = "destinations"
 _DESTINATION_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+_JOB_ID = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
 
 def load_destination(name: Optional[str], path: Optional[Path] = None) -> Dict[str, object]:
     """Return the registry entry of destination ``name`` (``publish_destinations.json``).
 
     Raises:
-        UsageError: The name is malformed, unknown, has no module, or the
-            entry is not well formed (never echoes the name).
+        UsageError: The name is malformed or unknown, or the entry is not well
+            formed (never echoes the name).
     """
     if name is None or not _DESTINATION_NAME.fullmatch(name):
-        raise UsageError("--destination must name an entry of scripts/ci/"
+        raise UsageError("--destination (or CI_DESTINATION) must name an entry of scripts/ci/"
                          "publish_destinations.json")
     try:
         data = json.loads((path or DESTINATIONS_FILE).read_text(encoding="utf-8"))
@@ -2036,14 +2043,82 @@ def load_destination(name: Optional[str], path: Optional[Path] = None) -> Dict[s
     entries = data.get("destinations") if isinstance(data, dict) else None
     entry = next((e for e in entries if isinstance(e, dict) and e.get("name") == name), None) \
         if isinstance(entries, list) else None
-    if entry is None or name not in DESTINATION_MODULES:
-        raise UsageError("--destination must name an entry of scripts/ci/"
-                         "publish_destinations.json that has a module")
-    if not (isinstance(entry.get("enabled"), bool) and entry.get("tier") in ("release", "staging")
-            and entry.get("environment") == entry.get("tier")):
-        raise UsageError("publish_destinations.json: the entry needs enabled, a tier and an "
-                         "environment equal to it")
+    if entry is None:
+        raise UsageError("--destination (or CI_DESTINATION) must name an entry of scripts/ci/"
+                         "publish_destinations.json")
+    import destinations
+    credentials = entry.get("credentials")
+    if not (isinstance(entry.get("enabled"), bool) and entry.get("tier") in destinations.TIERS
+            and entry.get("environment") == entry.get("tier")
+            and entry.get("permission_class") in destinations.PERMISSION_CLASSES
+            and isinstance(credentials, list)
+            and all(isinstance(c, str) and c.startswith(destinations.CREDENTIAL_PREFIX)
+                    for c in credentials)):
+        raise UsageError("publish_destinations.json: the entry needs enabled, a tier, an "
+                         "environment equal to it, a known permission class and CI_PUBLISH_* "
+                         "credentials")
     return entry
+
+
+def load_destination_module(name: str):
+    """Import destination ``name`` from :data:`DESTINATIONS_PACKAGE` and check the D9 interface.
+
+    Raises:
+        UsageError: The module is missing or does not implement D9.
+    """
+    import destinations
+    try:
+        return destinations.load(name, DESTINATIONS_PACKAGE)
+    except destinations.DestinationError as exc:
+        raise UsageError(str(exc)) from None
+
+
+def check_job_binding(entry: Mapping[str, object], name: str, phase: Optional[str],
+                      module, path: Optional[Path] = None) -> None:
+    """A privileged phase runs only in the publish job ``publish_jobs.json`` assigns it (D9).
+
+    ``CI_JOB`` must name a ``stage-publish.yml`` job of ``publish_jobs.json``
+    whose tier and permission class equal the destination's. A job bound to
+    one destination (``destination``/``phase`` keys: ``release-draft``,
+    ``release-promote``, ``registry-pr``) runs only that destination's phase
+    (``preflight`` too); a class matrix job (``"matrix": true``) runs only
+    single-phase destinations (no ``PHASES``). Defence in depth: the matrix
+    rows come from ``plan.py``, and a row can never move a destination into
+    another class's job.
+
+    Raises:
+        publish_inputs.PublishInputError: The first mismatch (never echoes a
+            malformed job id).
+    """
+    import destinations
+    import publish_inputs as pin
+    job = env_names.get("CI_JOB")
+    shown = job if _JOB_ID.fullmatch(job or "") else "<rejected>" if job else "none"
+    try:
+        data = json.loads((path or PUBLISH_JOBS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise pin.PublishInputError("publish_jobs.json: expected readable JSON -> actual "
+                                    "unreadable") from None
+    jobs = data.get("jobs") if isinstance(data, dict) else None
+    match = next((j for j in jobs if isinstance(j, dict) and j.get("job") == job
+                  and j.get("file") == "stage-publish.yml"), None) \
+        if isinstance(jobs, list) and _JOB_ID.fullmatch(job or "") else None
+    if match is None:
+        raise pin.PublishInputError(f"{name}: expected a publish_jobs.json job (CI_JOB) -> "
+                                    f"actual {shown}")
+    if (match.get("tier"), match.get("permission_class")) != \
+            (entry.get("tier"), entry.get("permission_class")):
+        raise pin.PublishInputError(f"{name}: expected a {entry.get('tier')}-tier "
+                                    f"{entry.get('permission_class')} job -> actual {shown}")
+    own = destinations.phases(module)
+    if match.get("matrix") is True:
+        if own or phase is not None:
+            raise pin.PublishInputError(f"{name}: expected a single-phase destination in class "
+                                        f"job {shown} -> actual a phased one")
+        return
+    if match.get("destination") != name or phase not in ("preflight", match.get("phase")):
+        raise pin.PublishInputError(f"{name} {phase or 'publish'}: expected the job "
+                                    f"publish_jobs.json assigns -> actual {shown}")
 
 
 def _publish_record(label: str, ok: bool, start: float, text: str, results: Path) -> None:
@@ -2057,9 +2132,13 @@ def _publish_record(label: str, ok: bool, start: float, text: str, results: Path
 def _publish_inputs(entry: Mapping[str, object], dry_run: bool, log: Callable[[str], None]):
     """Load, anchor and validate everything the destination will act on (constraints 4-6).
 
-    A dry run accepts a missing anchor, tag, commit, run id or build
-    binary-cache map, says so in one ``info:`` line each, and substitutes the
-    manifest's own values; a real run refuses every one of them.
+    ``release`` tier: the tag binding of constraint 5 (local half) and the
+    cold-build rule. ``staging`` tier (D9): no tag; ``manifest.commit`` must
+    equal ``CI_COMMIT``, and ``binary_cache: restored`` is accepted (still
+    cross-checked against the build job). A dry run accepts a missing anchor,
+    tag, commit, run id or build binary-cache map, says so in one ``info:``
+    line each, and substitutes the manifest's own values; a real run refuses
+    every one of them.
 
     Raises:
         publish_inputs.PublishInputError: The first refusal.
@@ -2075,9 +2154,10 @@ def _publish_inputs(entry: Mapping[str, object], dry_run: bool, log: Callable[[s
             "refuses this)")
     raw, data = pin.load_anchored_manifest(dist, anchor)
     view = pin.validate_manifest(data, anchor, len(raw), legs)
+    tier = str(entry["tier"])
     tag, commit, run_id = (env_names.get("CI_REF_NAME"), env_names.get("CI_COMMIT"),
                            env_names.get("CI_RUN_ID"))
-    if dry_run and not pin.TAG.fullmatch(tag or ""):
+    if dry_run and tier == "release" and not pin.TAG.fullmatch(tag or ""):
         tag = f"v{view.version}"
         log(f"info: dry run: CI_REF_NAME is not a release tag; showing {tag}")
     if dry_run and not commit:
@@ -2086,16 +2166,22 @@ def _publish_inputs(entry: Mapping[str, object], dry_run: bool, log: Callable[[s
     if dry_run and not pin.RUN_ID.fullmatch(run_id or ""):
         run_id = "0"
         log("info: dry run: CI_RUN_ID is not a run id; showing 0")
-    base, prerelease = pin.check_commit_binding(tag, view, commit)
+    if tier == "release":
+        base, prerelease = pin.check_commit_binding(tag, view, commit)
+    else:
+        pin.check_staging_binding(view, commit)
+        tag, base, prerelease = "", view.version, False
     pin.run_marker(run_id)
     build = pin.parse_build_binary_cache(env_names.get("CI_BUILD_BINARY_CACHE"))
-    tier = str(entry["tier"])
     if build is None and dry_run:
         pin.check_binary_cache(view, "staging", None)
         if tier == "release" and any(e.get("binary_cache") != "none" for e in view.legs):
             pin.check_binary_cache(view, tier, {str(e["leg"]): "none" for e in view.legs})
         log("info: dry run: CI_BUILD_BINARY_CACHE unset, build-job cross-check skipped (a real "
             "run refuses this)")
+    elif build is None and tier == "staging":
+        raise pin.PublishInputError("CI_BUILD_BINARY_CACHE: expected the build job's "
+                                    "binary_cache_<leg> outputs -> actual unset")
     else:
         pin.check_binary_cache(view, tier, build)
     return pin.ReleaseInputs(tag, base, prerelease, commit, run_id, view,
@@ -2134,13 +2220,18 @@ def _publish_prepare(name: str, inputs, reporter: Reporter, log: Callable[[str],
     is ``clear`` on a tag event, CR-2), runs :func:`registry_prepare.run` and
     sets the job output ``registry_prepared`` (``{"base", "git_tree",
     "files"}``), the out-of-band digests ``registry-pr`` checks the hand-over
-    against. This job holds no credential (checked by the caller).
+    against. This job holds no credential (checked by the caller). Only
+    ``vcpkg-registry`` has a ``prepare`` phase; the destination module itself
+    never imports ``registry_prepare`` (RP-2: it runs beside a token).
 
     Raises:
         registry_prepare.PrepareError: A refused or failed step.
+        UsageError: Another destination declares a ``prepare`` phase.
     """
     import bootstrap_vcpkg
     import registry_prepare
+    if name != "vcpkg-registry":
+        raise UsageError(f"--only prepare is the vcpkg-registry toolchain phase, not {name}'s")
     legs = load_legs()
     ctx = Context(stage="publish", leg=_leg("linux", legs["legs"]["linux"]),  # type: ignore[index]
                   reporter=reporter,
@@ -2171,36 +2262,66 @@ def _publish_prepare(name: str, inputs, reporter: Reporter, log: Callable[[str],
             f"git-tree {str(prepared['git_tree'])[:12]}, base {str(prepared['base'])[:12]}")
 
 
-def run_publish(args: argparse.Namespace) -> int:
-    """``stage.py publish --destination <name> --only <phase> [--dry-run]``.
+def _take_credentials() -> Tuple[Dict[str, str], Optional[Tuple[str, str]]]:
+    """Remove every ``CI_PUBLISH_*`` name and the OIDC request from ``os.environ`` (RP-8).
 
-    Phases: ``preflight`` (every destination), then the module's ``PHASES``:
-    ``draft``/``promote`` (``github-release``), ``prepare``/``branch``
-    (``vcpkg-registry``, 0012 Story 04.0 Task 03). The credential
-    (``CI_PUBLISH_TOKEN``) is removed from ``os.environ`` before anything else
-    runs (RP-8) and handed to the destination as a redacted
-    :class:`publish_github_release.Secret`; a dry run discards it unread. No
-    child process is started on a credentialed path. A module's
-    ``UNPRIVILEGED_PHASES`` (``prepare``) run the toolchain, so they refuse
-    when a credential was set at all (RP-2) and never build an API client.
-    Exit 0 success, 1 a refusal or a failed request (one RC1 line), 2 a usage
-    error, 70 an internal error (type name only, never its message).
+    Called first in :func:`run_publish`, before any argument is validated, so
+    nothing that runs later (and no child process) can see them.
+
+    Returns:
+        ``({name: value}, (oidc_url, oidc_token) or None)``.
     """
-    secret = os.environ.pop("CI_PUBLISH_TOKEN", "")
-    had_secret = bool(secret)
+    import destinations
+    from reporters import take_oidc_request
+    taken = {k: os.environ.pop(k) for k in list(os.environ)
+             if k.upper().startswith(destinations.CREDENTIAL_PREFIX)}
+    return taken, take_oidc_request()
+
+
+def run_publish(args: argparse.Namespace) -> int:
+    """``stage.py publish [--destination <name>] [--only <phase>] [--dry-run]``.
+
+    The destination comes from ``--destination`` or, in a permission-class
+    matrix job, from ``CI_DESTINATION`` (the matrix row; ADR 0005 D9). Its
+    module is driven only through the D9 interface (:mod:`destinations`):
+    ``validate``, then ``publish`` (``--only <phase>`` selects one of a phased
+    destination's ``PHASES``, plus the common ``preflight``) or
+    ``check_published`` (an ``UNPRIVILEGED_PHASES`` member other than
+    ``prepare``: ``post-publish``). Every ``CI_PUBLISH_*`` credential and the
+    platform's OIDC request leave ``os.environ`` before anything else runs
+    (RP-8); the destination receives only the credentials its entry and its
+    ``REQUIRED_ENV`` both name, each a redacted ``destinations.Secret``. A dry
+    run discards them unread. An unprivileged phase refuses when any
+    credential is set at all (RP-2, constraint 11) and gets none. A real
+    privileged phase must run in the job ``publish_jobs.json`` assigns it
+    (:func:`check_job_binding`). Exit 0 success, 1 a refusal or a failed
+    request (one RC1 line), 2 a usage error, 70 an internal error (type name
+    only, never its message).
+    """
+    taken, oidc_request = _take_credentials()
+    had_secret = any(taken.values()) or oidc_request is not None
     if args.dry_run:
-        secret = ""
+        taken, oidc_request = {}, None
     try:
         if args.leg is not None or args.job_failed:
             raise UsageError("--leg and --job-failed are not valid with publish")
-        entry = load_destination(args.destination)
+        name = args.destination or env_names.get("CI_DESTINATION") or None
+        if args.destination and env_names.get("CI_DESTINATION") \
+                and env_names.get("CI_DESTINATION") != args.destination:
+            raise UsageError("--destination and CI_DESTINATION name different destinations")
+        entry = load_destination(name)
         name = str(entry["name"])
-        steps = STEPS["publish"]
-        if args.only is not None and args.only not in steps:
-            raise UsageError(f"--only must be one of: {', '.join(steps)}")
-        if args.only is None and not args.dry_run:
-            raise UsageError("publish needs --only " + "|".join(steps) + " (one phase per job, "
-                             "ADR 0005 D6) or --dry-run")
+        module = load_destination_module(name)
+        import destinations
+        phases = destinations.phases(module)
+        if phases:
+            if args.only is not None and args.only not in phases:
+                raise UsageError(f"--only must be one of: {', '.join(phases)} for {name}")
+            if args.only is None and not args.dry_run:
+                raise UsageError(f"publish {name} needs --only " + "|".join(phases) +
+                                 " (one phase per job, ADR 0005 D6) or --dry-run")
+        elif args.only is not None:
+            raise UsageError(f"{name} has a single phase: --only is not valid")
         try:
             reporter = get_reporter(args.reporter)
         except ValueError:
@@ -2211,17 +2332,10 @@ def run_publish(args: argparse.Namespace) -> int:
     except UsageError as exc:
         ci_step.emit_error(f"stage.py: error: {exc}")
         return EXIT_USAGE
-    import importlib
     import post_publish_check
     import publish_inputs as pin
     import registry_update
-    module = importlib.import_module(DESTINATION_MODULES[name])
-    phases = ("preflight",) + tuple(getattr(module, "PHASES", ()))
-    unprivileged = tuple(getattr(module, "UNPRIVILEGED_PHASES", ()))
-    if args.only is not None and args.only not in phases:
-        ci_step.emit_error(f"stage.py: error: --only must be one of: {', '.join(phases)} "
-                           f"for {name}")
-        return EXIT_USAGE
+    unprivileged = destinations.unprivileged_phases(module)
     label = f"publish {name}" + (f" {args.only}" if args.only else "") + \
         (" (dry run)" if args.dry_run else "")
     start = time.monotonic()
@@ -2229,6 +2343,9 @@ def run_publish(args: argparse.Namespace) -> int:
     def log(line: str) -> None:
         ci_step.emit(reporter.info(line))
 
+    wanted = set(destinations.credential_names(module)) & {str(c) for c in entry["credentials"]}
+    errors = (pin.PublishInputError, registry_update.RegistryError, post_publish_check.CheckError,
+              getattr(module, "PublishError", pin.PublishInputError))
     try:
         if args.only in unprivileged and had_secret:
             # RP-2 / constraint 1: a phase that runs the toolchain never shares
@@ -2237,54 +2354,51 @@ def run_publish(args: argparse.Namespace) -> int:
                    if args.only == "post-publish" else
                    "RP-2: toolchain code never runs beside a token")
             raise pin.PublishInputError(f"{name} {args.only}: expected no credential in this "
-                                        f"job ({why}) -> actual CI_PUBLISH_TOKEN set")
+                                        f"job ({why}) -> actual a credential set")
+        privileged = not args.dry_run and args.only not in unprivileged
         if not args.dry_run:
             _publish_gates(entry, name)
+            if privileged:
+                check_job_binding(entry, name, args.only, module)
         inputs = _publish_inputs(entry, args.dry_run, log)
+        denv = destinations.Env(
+            values={n: env_names.get(n) for n in module.REQUIRED_ENV
+                    if not n.startswith(destinations.CREDENTIAL_PREFIX)},
+            credentials=({n: destinations.Secret(taken[n]) for n in sorted(wanted)
+                          if taken.get(n)} if privileged else {}),
+            phase=args.only, dry_run=args.dry_run, log=log,
+            workspace=Path(env_names.get("CI_WORKSPACE", required=True)),
+            temp_dir=Path(env_names.get("CI_TEMP_DIR", required=True)),
+            log_dir=Path(env_names.get("CI_LOG_DIR", required=True)),
+            results=results, reporter=reporter,
+            oidc=((oidc_request[0], destinations.Secret(oidc_request[1]))
+                  if privileged and oidc_request is not None
+                  and entry.get("permission_class") == "oidc" else None))
+        taken, oidc_request = {}, None
+        artifact_dir = Path(env_names.get("CI_ARTIFACT_DIR", required=True))
         verified = env_names.get("CI_VERIFIED_MANIFEST_SHA256")
+        module.validate(inputs, denv)
+        what = inputs.tag or f"{inputs.manifest.version} (staging)"
         if args.dry_run:
             if args.only != "preflight":
-                extra = {"workspace": Path(env_names.get("CI_WORKSPACE", required=True))} \
-                    if "workspace" in inspect.signature(module.dry_run_plan).parameters else {}
-                ci_step.emit([ln for line in module.dry_run_plan(
-                    inputs, env_names.get("CI_REPOSITORY") or "<owner>/<repo>", args.only,
-                    **extra) for ln in reporter.info(line)])
+                result = module.publish(inputs, artifact_dir, denv, True)
+                ci_step.emit([ln for line in result.lines for ln in reporter.info(line)])
             gate = ("passes" if verified == inputs.manifest.sha256 else
                     "refuses (no verify result)" if not verified else "refuses (other manifest)")
             state = "enabled" if entry.get("enabled") is True else "disabled (real run refuses)"
-            summary = (f"{inputs.tag}: {len(inputs.assets)} assets match manifest "
+            summary = (f"{what}: {len(inputs.assets)} assets match manifest "
                        f"{inputs.manifest.sha256[:16]}, {state}, verify gate {gate}, "
                        "0 requests, credential unread")
-        elif args.only in unprivileged:
-            pin.check_verify_gate(inputs.manifest.sha256, verified)
-            if args.only == "prepare":
-                summary = _publish_prepare(name, inputs, reporter, log)
-            else:
-                # post-publish (Task 04): anonymous, no API client with a token.
-                summary = module.post_publish(inputs, env_names.get("CI_REPOSITORY"), log)
         else:
             pin.check_verify_gate(inputs.manifest.sha256, verified)
-            kwargs = {}
-            if hasattr(module, "load_handoff") and args.only not in (None, "preflight"):
-                kwargs["handoff"] = module.load_handoff(
-                    Path(env_names.get("CI_ARTIFACT_DIR", required=True)),
-                    env_names.get("CI_REGISTRY_PREPARED"))
-            api = module.GitHubApi(module.Secret(secret), env_names.get("CI_REPOSITORY"))
-            secret = ""
-            if args.only == "preflight":
-                import publish_github_release
-                publish_github_release.settings_preflight(api, log)
-                if hasattr(module, "workflow_settings_preflight"):
-                    module.workflow_settings_preflight(api, log)
-                publish_github_release.commit_preflight(api, inputs)
-                summary = (f"preflight {inputs.tag}: tag and master ancestry bind "
-                           f"{inputs.commit[:12]}, {len(inputs.assets)} assets match the "
-                           "manifest")
+            if args.only == "prepare" and args.only in unprivileged:
+                summary = _publish_prepare(name, inputs, reporter, log)
+            elif args.only in unprivileged:
+                # post-publish (Task 04): anonymous, no credential, no API client with a token.
+                summary = module.check_published(inputs, denv)
             else:
-                summary = getattr(module, args.only)(api, inputs, log, **kwargs)
-    except (pin.PublishInputError, registry_update.RegistryError,
-            post_publish_check.CheckError,
-            getattr(module, "PublishError", pin.PublishInputError)) as exc:
+                summary = module.publish(inputs, artifact_dir, denv, False).summary
+    except errors as exc:
         text = str(exc).splitlines()[0] if str(exc) else "refused"
         elapsed = round(time.monotonic() - start, 1)
         ci_step.emit(reporter.step_fail(label, EXIT_GATE, elapsed, text, []))

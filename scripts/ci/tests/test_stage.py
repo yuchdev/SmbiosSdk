@@ -492,7 +492,9 @@ class LegsDataTests(unittest.TestCase):
                                      r"|package( --only manifest)?"
                                      r"|verify --only (deps|artifact|gate|registry|releases)"
                                      r"|publish --destination [a-z0-9-]+ --only "
-                                     r"(preflight|draft|promote|post-publish|prepare|branch))$")
+                                     r"(preflight|draft|promote|post-publish|prepare|branch)"
+                                     # Task 05 (D9): a class matrix job (CI_DESTINATION).
+                                     r"|publish)$")
 
 
 class BinaryCacheStateTests(unittest.TestCase):
@@ -1064,25 +1066,29 @@ class RunStageTests(unittest.TestCase):
             if name == "publish":
                 continue  # not leg-based: run_publish dispatches to the destination module
             self.assertEqual(tuple(stage.STEP_FUNCTIONS[name]), steps)
-        import importlib
-        import publish_github_release
+        # Task 05 (ADR 0005 D9): publish destinations are the registry's
+        # entries, each a module of scripts/ci/destinations/ with the D9
+        # interface; their PHASES together are STEPS["publish"] after preflight.
+        import json
+        import destinations
         import registry_prepare
+        registry = json.loads(stage.DESTINATIONS_FILE.read_text(encoding="utf-8"))
+        names = [e["name"] for e in registry["destinations"]]
+        self.assertEqual(sorted(names), ["github-release", "s3-staging", "vcpkg-registry"])
         phases = set()
-        for module_name in stage.DESTINATION_MODULES.values():
-            module = importlib.import_module(module_name)
-            unprivileged = getattr(module, "UNPRIVILEGED_PHASES", ())
-            for phase in module.PHASES:
+        for name in names:
+            module = destinations.load(name)
+            for member in destinations.INTERFACE:
+                self.assertTrue(hasattr(module, member), (name, member))
+            unprivileged = destinations.unprivileged_phases(module)
+            for phase in getattr(module, "PHASES", ()):
                 phases.add(phase)
                 self.assertIn(phase, stage.STEPS["publish"][1:])
-                if phase in unprivileged:  # dispatched to registry_prepare.run (no token)
+                if phase == "prepare":  # dispatched to registry_prepare.run (no token)
                     self.assertTrue(callable(registry_prepare.run))
-                else:
-                    self.assertTrue(callable(getattr(module, phase, None)), (module_name, phase))
-            self.assertTrue(callable(module.dry_run_plan))
-        # preflight is common: publish_github_release's settings and commit preflights.
+                elif phase not in unprivileged:
+                    self.assertTrue(callable(module.publish), (name, phase))
         self.assertEqual(phases, set(stage.STEPS["publish"][1:]))
-        self.assertTrue(callable(publish_github_release.settings_preflight))
-        self.assertTrue(callable(publish_github_release.commit_preflight))
 
 
 class ToolsVenvTests(unittest.TestCase):

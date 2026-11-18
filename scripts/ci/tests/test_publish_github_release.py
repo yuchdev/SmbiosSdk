@@ -34,7 +34,6 @@ Run: ``python3 scripts/ci/run_tests.py``.
 
 from __future__ import annotations
 
-import ast
 import base64
 import contextlib
 import functools
@@ -55,12 +54,14 @@ from typing import Any, Callable, Dict, List, Optional
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
-from ci_test_support import CI_DIR
+from ci_test_support import (CI_DIR, DESTINATIONS_DIR, in_process_destination_modules,
+                             used_names)
 
 import job_summary  # noqa: E402
 import package_archive as pa  # noqa: E402
-import publish_github_release as pgr  # noqa: E402
+from destinations import github_release as pgr  # noqa: E402
 import publish_inputs as pin  # noqa: E402
+import destinations  # noqa: E402
 import stage  # noqa: E402
 from reporters import get_reporter  # noqa: E402
 
@@ -431,15 +432,32 @@ def registry(case: _FakeCase, enabled: bool = True) -> Path:
     return path
 
 
+#: The stage-publish.yml job each github-release phase runs in (its ``CI_JOB``;
+#: Task 05: stage.py binds a privileged phase to its publish_jobs.json job).
+PHASE_JOBS: Dict[str, str] = {"draft": "release-draft", "promote": "release-promote",
+                              "preflight": "release-draft", "post-publish": "post-publish"}
+
+
+def job_for(args: List[str], jobs: Dict[str, str]) -> Dict[str, str]:
+    """``{"CI_JOB": <job>}`` for an ``--only <phase>`` argument list, else ``{}`` (a dry run)."""
+    if "--only" in args:
+        phase = args[args.index("--only") + 1]
+        return {"CI_JOB": jobs[phase]} if phase in jobs else {}
+    return {}
+
+
 def run_stage(case: _FakeCase, args: List[str], *, enabled: bool = True,
               policy: Optional[pgr.HostPolicy] = None, **env: str) -> StageRun:
     """Run ``stage.main(["publish", "--destination", "github-release", *args])`` in-process.
 
-    Afterwards the job summary is rendered from the RC3 records exactly as the
-    workflow's summary step would, so its file and artifact can be scanned too.
+    ``CI_JOB`` is the phase's ``stage-publish.yml`` job, as the workflow sets it,
+    unless the caller passes its own. Afterwards the job summary is rendered
+    from the RC3 records exactly as the workflow's summary step would, so its
+    file and artifact can be scanned too.
     """
     out, err = io.StringIO(), io.StringIO()
     bound = functools.partial(pgr.GitHubApi, policy=policy or case.fake.policy(), timeout_s=10)
+    env = {**job_for(args, PHASE_JOBS), **env}
     with mock.patch.dict(os.environ, stage_env(case, **env), clear=True), \
             mock.patch.object(pgr, "GitHubApi", bound), \
             mock.patch.object(stage, "DESTINATIONS_FILE", registry(case, enabled)), \
@@ -467,22 +485,53 @@ class NoChildProcessTests(_FakeCase):
     FORBIDDEN = {"subprocess", "ci_step", "os.system", "os.popen", "os.exec", "pty",
                  "multiprocessing", "shlex", "exec", "eval", "__import__"}
 
+    #: Task 05: the modules moved to scripts/ci/destinations/. The package
+    #: __init__ is imported by every destination, so it is scanned too.
+    SCANNED = (DESTINATIONS_DIR / "github_release.py", DESTINATIONS_DIR / "__init__.py",
+               CI_DIR / "publish_inputs.py", CI_DIR / "post_publish_check.py")
+
     def test_DestinationModulesImportNoSubprocessOrStepRunner(self) -> None:
-        for name in ("publish_github_release.py", "publish_inputs.py"):
-            with self.subTest(module=name):
-                tree = ast.parse((CI_DIR / name).read_text(encoding="utf-8"))
-                used = set()
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.Import):
-                        used |= {a.name.split(".")[0] for a in node.names}
-                    elif isinstance(node, ast.ImportFrom) and node.module:
-                        used.add(node.module.split(".")[0])
-                    elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-                        name_ = f"{node.value.id}.{node.attr}"
-                        used.add(name_[:7] if name_.startswith("os.exec") else name_)
-                    elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                        used.add(node.func.id)
+        for path in self.SCANNED:
+            with self.subTest(module=path.name):
+                used = used_names(path.read_text(encoding="utf-8"))
                 self.assertEqual(used & self.FORBIDDEN, set())
+
+    def test_ScanCoversTheMovedModuleAndEveryInProcessDestination(self) -> None:
+        """Regression (Task 05): the scan targets the modules that are actually imported.
+
+        ``stage.py`` imports ``destinations.github_release``; the old top-level
+        ``publish_github_release.py`` must be gone, so no test can keep
+        scanning a stale copy. Every registered ``repo-write``/``token-only``
+        destination module is scanned by this suite or the registry suite.
+        """
+        import destinations
+        module = destinations.load("github-release")
+        self.assertEqual(Path(module.__file__).resolve(), self.SCANNED[0].resolve())
+        self.assertFalse((CI_DIR / "publish_github_release.py").exists())
+        covered = {p.resolve() for p in self.SCANNED} | {
+            (DESTINATIONS_DIR / "vcpkg_registry.py").resolve()}
+        listed = in_process_destination_modules()
+        self.assertTrue(listed)
+        for path in listed:
+            self.assertIn(path.resolve(), covered, f"{path.name} is not AST-scanned")
+
+    def test_ScanCatchesAPlantedChildProcess(self) -> None:
+        """Binding proof: the same scan, run on the real module with one forbidden line added, fires.
+
+        Each planted line is appended to the shipped ``github_release.py``
+        source in memory; the scan must report it. If the scanner or the
+        forbidden set were weakened, this fails.
+        """
+        source = self.SCANNED[0].read_text(encoding="utf-8")
+        for planted, name in (("import subprocess", "subprocess"),
+                              ("import ci_step", "ci_step"),
+                              ("from os import system", "os.system"),
+                              ("os.execv('x', ['x'])", "os.exec"),
+                              ("eval('1')", "eval"),
+                              ("from subprocess import run", "subprocess")):
+            with self.subTest(planted=planted):
+                used = used_names(source + "\n" + planted + "\n")
+                self.assertIn(name, used & (self.FORBIDDEN | {"os.system"}))
 
     def test_FullDraftRunStartsNoChildProcess(self) -> None:
         def no_child(*_a: Any, **_k: Any) -> None:
@@ -1041,7 +1090,7 @@ class DryRunTests(_FakeCase):
         def no_network(*_a: Any, **_k: Any) -> None:
             raise AssertionError("network or credential used in a dry run")
         with mock.patch("urllib.request.OpenerDirector.open", side_effect=no_network), \
-                mock.patch.object(pgr, "Secret", side_effect=no_network):
+                mock.patch.object(destinations, "Secret", side_effect=no_network):
             run = run_stage(self, ["--dry-run"], enabled=False, CI_VERIFIED_MANIFEST_SHA256="")
         self.assertEqual(run.rc, 0, run.text)
         uploads = re.findall(r"would upload (\S+) \((\d+) bytes, sha256 ([0-9a-f]{16})\)",

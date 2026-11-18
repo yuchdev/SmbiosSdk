@@ -115,7 +115,8 @@ class ReleaseInputs:
     """Everything a destination may act on, all validated.
 
     Attributes:
-        tag: The release tag (``CI_REF_NAME``), matching :data:`TAG`.
+        tag: The release tag (``CI_REF_NAME``), matching :data:`TAG`; ``""``
+            for a ``staging``-tier run (a push to ``master``, no tag).
         base: The tag's ``X.Y.Z`` (equals ``manifest.version``).
         prerelease: Whether the tag carries a ``-<pre>`` suffix.
         commit: ``CI_COMMIT`` (equals ``manifest.commit``).
@@ -169,6 +170,22 @@ def check_commit_binding(tag: str, view: ManifestView, commit: str) -> Tuple[str
         raise PublishInputError(f"manifest.commit: expected {commit[:12]} (CI_COMMIT) -> actual "
                                 f"{view.commit[:12]}")
     return base, pre is not None
+
+
+def check_staging_binding(view: ManifestView, commit: str) -> None:
+    """The staging tier's binding (ADR 0005 D9; 0012 Story 04.0 Task 05): ``manifest.commit`` == commit.
+
+    A ``staging`` destination runs on a push to ``master``, so there is no tag
+    to bind; the manifest must still name the commit this run built.
+
+    Raises:
+        PublishInputError: ``CI_COMMIT`` is malformed or differs from ``manifest.commit``.
+    """
+    if not COMMIT.fullmatch(commit or ""):
+        raise PublishInputError("CI_COMMIT: expected a 40-hex commit id -> actual <rejected>")
+    if view.commit != commit:
+        raise PublishInputError(f"manifest.commit: expected {commit[:12]} (CI_COMMIT) -> actual "
+                                f"{view.commit[:12]}")
 
 
 # ---------------------------------------------------------------------------

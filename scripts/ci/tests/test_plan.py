@@ -165,7 +165,7 @@ def _data(edit_legs=None, edit_pins=None) -> plan.PlanData:
         edit_legs(legs)
     if edit_pins:
         edit_pins(pins)
-    return plan.PlanData(legs, pins, base.publish_jobs, base.defined_stages)
+    return plan.PlanData(legs, pins, base.publish_jobs, base.defined_stages, base.destinations)
 
 
 class DataValidationTests(unittest.TestCase):
@@ -234,7 +234,8 @@ class PublishGatingTests(unittest.TestCase):
 
     def data(self, defined) -> plan.PlanData:
         base = plan.load_data()
-        return plan.PlanData(base.legs, base.pins, base.publish_jobs, frozenset(defined))
+        return plan.PlanData(base.legs, base.pins, base.publish_jobs, frozenset(defined),
+                             base.destinations)
 
     def test_WithoutVerifyThereAreNoPublishRows(self) -> None:
         """Fail closed: publish defined but verify not gives no publish row (ADR 0005 D6)."""
@@ -265,10 +266,16 @@ class PublishGatingTests(unittest.TestCase):
     def test_WithVerifyDefinedATagGetsTheReleaseRowsOnly(self) -> None:
         data = self.data({"package", "verify", "publish"})
         rows = plan.matrix_for("tag", "refs/tags/v1.0.1", "full", data=data)["publish"]
-        self.assertEqual(rows, [{"job": "release-draft", "tier": "release"},
-                                {"job": "release-promote", "tier": "release"},
-                                {"job": "registry-prepare", "tier": "release"},
-                                {"job": "registry-pr", "tier": "release"}])
+        # Task 05: rows name their destination, phase and permission class (D9).
+        self.assertEqual(rows, [
+            {"job": "release-draft", "tier": "release", "class": "repo-write",
+             "destination": "github-release", "phase": "draft"},
+            {"job": "release-promote", "tier": "release", "class": "repo-write",
+             "destination": "github-release", "phase": "promote"},
+            {"job": "registry-prepare", "tier": "release", "class": "unprivileged",
+             "destination": "vcpkg-registry", "phase": "prepare"},
+            {"job": "registry-pr", "tier": "release", "class": "repo-write",
+             "destination": "vcpkg-registry", "phase": "branch"}])
         for event, ref in (("push", "refs/heads/master"), ("pr", "refs/pull/3/merge"),
                            ("schedule", "refs/heads/master"), ("push", "refs/heads/topic")):
             with self.subTest(event=event, ref=ref):
@@ -286,13 +293,15 @@ class PreReleaseRegistryTests(unittest.TestCase):
     ``scripts/ci/publish_jobs.json``.
     """
 
-    RELEASE_ROWS = [{"job": "release-draft", "tier": "release"},
-                    {"job": "release-promote", "tier": "release"}]
+    RELEASE_ROWS = [{"job": "release-draft", "tier": "release", "class": "repo-write",
+                     "destination": "github-release", "phase": "draft"},
+                    {"job": "release-promote", "tier": "release", "class": "repo-write",
+                     "destination": "github-release", "phase": "promote"}]
 
     def data(self) -> plan.PlanData:
         base = plan.load_data()
         return plan.PlanData(base.legs, base.pins, base.publish_jobs,
-                             frozenset({"package", "verify", "publish"}))
+                             frozenset({"package", "verify", "publish"}), base.destinations)
 
     def jobs(self, ref: str) -> list:
         return plan.matrix_for("tag", ref, "full", data=self.data())["publish"]
@@ -328,8 +337,11 @@ class PreReleaseRegistryTests(unittest.TestCase):
                 jobs = [dict(j, **bad) if j["job"] == "registry-pr" else j
                         for j in base.publish_jobs]
                 data = plan.PlanData(base.legs, base.pins, tuple(jobs),
-                                     frozenset({"package", "verify", "publish"}))
-                with self.assertRaises(plan.PlanError):
+                                     frozenset({"package", "verify", "publish"}),
+                                     base.destinations)
+                # The flag itself is what is refused (not, say, an unregistered
+                # destination): the message names the job-entry shape.
+                with self.assertRaisesRegex(plan.PlanError, "a job entry needs"):
                     plan.matrix_for("tag", "refs/tags/v1.0.1", "full", data=data)
 
 

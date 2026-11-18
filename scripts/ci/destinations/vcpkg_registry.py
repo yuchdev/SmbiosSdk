@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""The ``vcpkg-registry`` publish destination (milestone 0012 Story 04.0 Task 03; ADR 0005 D6, D9).
+"""The ``vcpkg-registry`` publish destination (milestone 0012 Story 04.0 Tasks 03, 05; ADR 0005 D6, D9).
+
+Task 05 moved this module from ``scripts/ci/publish_vcpkg_registry.py`` behind
+the D9 interface of :mod:`destinations` (:func:`validate`, :func:`publish`,
+:func:`check_published`); ``stage.py`` calls nothing else here. The destination
+keeps the name ``vcpkg-registry`` (the jobs are ``registry-prepare`` and
+``registry-pr``): it writes a branch, never a PR (RP-9), so the task spec's
+``registry-pr``/``registry_pr`` destination name was not adopted. Permission
+class ``repo-write``, tier ``release``.
 
 Registers a final release in this repository's own vcpkg registry
 (``docs/dev/vcpkg-registry.md``) as a **branch** ``registry/v<version>``. A human
@@ -56,9 +64,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-import publish_github_release as pgr
 import publish_inputs as pin
 import registry_update as ru
+from destinations import Env, Result
+from destinations import github_release as pgr
 
 #: Registry key (ADR 0005 D9).
 NAME = "vcpkg-registry"
@@ -463,11 +472,77 @@ def dry_run_plan(inputs: pin.ReleaseInputs, repository: str, phase: Optional[str
     return lines
 
 
-def check_published(*_args: Any, **_kwargs: Any) -> None:
-    """D9 post-publish check: milestone 0012 Story 04.0 Task 04, not implemented here.
+# ---------------------------------------------------------------------------
+# The ADR 0005 D9 interface (Task 05): the only members stage.py calls
+# ---------------------------------------------------------------------------
+
+def validate(manifest: pin.ReleaseInputs, env: Env) -> None:
+    """D9 ``validate``: a release tag and a well-formed repository; no network.
+
+    A pre-release tag passes here (the dry run explains that a real run
+    refuses it); :func:`branch` refuses it before any request (constraint 8).
+
+    Raises:
+        PublishError: No release tag, or ``CI_REPOSITORY`` set but malformed.
+    """
+    if not pin.TAG.fullmatch(manifest.tag or ""):
+        raise PublishError(f"{NAME}: expected a release tag v<X.Y.Z> -> actual none (release "
+                           "tier only)")
+    repository = env.get("CI_REPOSITORY")
+    if repository and not pgr.REPOSITORY.fullmatch(repository):
+        raise PublishError("CI_REPOSITORY: expected owner/name -> actual <rejected>")
+
+
+def publish(manifest: pin.ReleaseInputs, artifact_dir: Path, env: Env, dry_run: bool) -> Result:
+    """D9 ``publish``: phase ``preflight`` or ``branch`` (``registry-pr``); REST only.
+
+    The ``prepare`` phase is unprivileged and never reaches this function:
+    ``stage.py`` runs ``registry_prepare`` in a job without a credential
+    (RP-2), and this module imports nothing that starts a child process. The
+    hand-over is loaded and checked against ``CI_REGISTRY_PREPARED`` before the
+    API client (and so the credential) is touched.
+
+    Raises:
+        PublishError: A refused or failed request, or an unknown phase.
+        publish_inputs.PublishInputError: A missing or altered hand-over.
+    """
+    validate(manifest, env)
+    repository = env.get("CI_REPOSITORY") or "<owner>/<repo>"
+    if dry_run:
+        lines = dry_run_plan(manifest, repository, env.phase, workspace=env.workspace)
+        return Result(f"registry change for {manifest.tag}",
+                      (f"https://github.com/{repository}/tree/registry/v{manifest.base}",),
+                      tuple(lines), 0)
+    if env.phase not in ("preflight", "branch"):
+        raise PublishError(f"{NAME}: expected phase preflight or branch -> actual another "
+                           "phase")
+    handoff = (load_handoff(Path(artifact_dir), env.get("CI_REGISTRY_PREPARED"))
+               if env.phase == "branch" else None)
+    api = GitHubApi(env.secret("CI_PUBLISH_TOKEN"), env.get("CI_REPOSITORY"))
+    if handoff is None:
+        pgr.settings_preflight(api, env.log)
+        workflow_settings_preflight(api, env.log)
+        pgr.commit_preflight(api, manifest)
+        summary = (f"preflight {manifest.tag}: tag and master ancestry bind "
+                   f"{manifest.commit[:12]}, {len(manifest.assets)} assets match the manifest")
+    else:
+        summary = branch(api, manifest, env.log, handoff=handoff)
+    return Result(summary, (f"https://github.com/{api.repository}/tree/registry/"
+                            f"v{manifest.base}",), (), len(api.calls))
+
+
+def check_published(manifest: pin.ReleaseInputs, env: Env) -> str:
+    """D9 ``check_published``: not run at publish time (fail closed if called).
+
+    Before a human merges the PR there is no published registry state to
+    re-read; the branch itself is checked inside :func:`branch` (tree id
+    against the computed ``git-tree``). After the merge, the nightly
+    ``stage.py verify --only registry`` (Task 04) is this destination's
+    post-publish check: the vcpkg consumer test against the published registry.
 
     Raises:
         PublishError: Always.
     """
-    raise PublishError("check_published: expected 0012 Story 04.0 Task 04 -> actual not "
-                       "implemented")
+    del manifest, env
+    raise PublishError(f"{NAME} check_published: expected the nightly verify --only registry "
+                       "after the human merge -> actual called at publish time")

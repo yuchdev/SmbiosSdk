@@ -1,7 +1,7 @@
 # Story 04.0 - Release and Publish Automation
 
 **Parent milestone:** [plan.md](../plan.md)
-**Status:** 🔶 In progress (Task 01 complete, 2026-11-17; Tasks 02, 03 and 04 implemented 2026-11-18. `verify` now exists, so a tag gets publish rows; the end-to-end proof is blocked on the first CI run of `verify`, settings S-1..S-8 and a real tag)
+**Status:** 🔶 In progress (Task 01 complete, 2026-11-17; Tasks 02-05 implemented 2026-11-18; `verify` green on all three legs in CI run 44290476729. Every task is now code; the end-to-end proof is blocked on settings S-1..S-8 (and S-9 for `s3-staging`), a real tag, and the first CI run of Task 05's workflow changes. Remaining items: [status.md](../status.md))
 **Depends on:** Stories 01.0, 02.0 and 03.0 (it automates their manual steps); milestone 0014 Stories 01.0-03.0 and Story 04.0 Task 02 (the pipeline foundation and the tier rows, per [ADR 0005](/docs/adr/0005-unified-build-package-publish-pipeline.md))
 
 ## Scope
@@ -25,7 +25,7 @@ Workflow conventions are not restated here. Pins, permissions, step shape, repor
 | 02 | [Publish stage: gated draft, upload, promote](02-release-pipeline-draft-upload-publish.md) | 🔶 Implemented (2026-11-18); criterion 1 blocked on S-1..S-8 read-back and a real tag (Task 04 now supplies the verify result) | 03 |
 | 03 | [Registry update in the publish stage](03-registry-update-automation.md) | 🔶 Implemented (2026-11-18); criterion 1 blocked on S-1..S-8 read-back and a real tag; criterion 2 amended (RP-9: a human opens the PR) | 04 |
 | 04 | [Verify stage and post-publish check](04-post-publish-verification.md) | 🔶 Implemented (2026-11-18); `verify` + `verify-gate` (all legs or no `verified_manifest_sha256`), anonymous `post-publish`, nightly registry consumer and 5-release re-check; criterion 1 met locally, needs the first CI run on all three OSes; criterion 2 passed against the real published registry (macOS, cold, 32 min) | 05 |
-| 05 | [Publish destination plug-ins and the S3 staging example](05-publish-destination-plugins.md) | ⬜ Not started | - |
+| 05 | [Publish destination plug-ins and the S3 staging example](05-publish-destination-plugins.md) | 🔶 Implemented (2026-11-18); criteria 1-4 met locally (fake-destination registration, dry run of all three destinations, P12 registry rules, doc links); `scripts/ci/destinations/` (`github-release`, `vcpkg-registry`, `s3-staging`, all `enabled: false`), class matrix jobs `publish-release-repo-write`/`publish-staging-oidc`; not yet run on CI | - |
 
 ## Key constraints
 

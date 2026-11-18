@@ -9,7 +9,8 @@
       "permission_class": "oidc",
       "permissions": [
         "id-token: write"
-      ]
+      ],
+      "matrix": true
     },
     {
       "file": "stage-publish.yml",
@@ -18,7 +19,9 @@
       "permission_class": "repo-write",
       "permissions": [
         "contents: write"
-      ]
+      ],
+      "destination": "github-release",
+      "phase": "draft"
     }
   ],
   "callers": [

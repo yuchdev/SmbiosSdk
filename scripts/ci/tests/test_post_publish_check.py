@@ -47,7 +47,7 @@ from urllib.parse import unquote, urlsplit
 from ci_test_support import CI_DIR
 
 import post_publish_check as ppc  # noqa: E402
-import publish_github_release as pgr  # noqa: E402
+from destinations import github_release as pgr  # noqa: E402
 import publish_inputs as pin  # noqa: E402
 import stage  # noqa: E402
 from test_publish_github_release import (COMMIT, LEGS, OTHER, REPO, TAG, inputs_for,  # noqa: E402
@@ -296,8 +296,10 @@ class NoCredentialTests(_Case):
                 used |= {a.name.split(".")[0] for a in node.names}
             elif isinstance(node, ast.ImportFrom) and node.module:
                 used.add(node.module.split(".")[0])
-        self.assertEqual(used & {"subprocess", "ci_step", "publish_github_release", "pty",
-                                 "multiprocessing"}, set())
+        # Task 05: the credentialed module now lives in the ``destinations``
+        # package, so importing that package is what must not happen here.
+        self.assertEqual(used & {"subprocess", "ci_step", "publish_github_release",
+                                 "destinations", "pty", "multiprocessing"}, set())
         self.assertNotIn("Authorization", (CI_DIR / "post_publish_check.py").read_text(
             encoding="utf-8").split('"""', 2)[2].replace('"Authorization") is not None', ""))
 

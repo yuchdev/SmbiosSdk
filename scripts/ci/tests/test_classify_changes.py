@@ -300,9 +300,10 @@ class CliValidationTests(unittest.TestCase):
                 self.assertEqual(proc.stdout, "")
 
 
-def _data(publish_jobs=(), defined=frozenset()) -> plan.PlanData:
+def _data(publish_jobs=(), defined=frozenset(), destinations=()) -> plan.PlanData:
     base = plan.load_data()
-    return plan.PlanData(base.legs, base.pins, tuple(publish_jobs), frozenset(defined))
+    return plan.PlanData(base.legs, base.pins, tuple(publish_jobs), frozenset(defined),
+                         tuple(destinations))
 
 
 class TierTableTests(unittest.TestCase):
@@ -397,23 +398,37 @@ class TierTableTests(unittest.TestCase):
 
     def test_PublishRowsFollowTheirTier(self) -> None:
         """A master push yields only staging rows; a tag only release rows; others none."""
-        data = _data([{"job": "release-gh", "tier": "release"},
-                      {"job": "staging-s3", "tier": "staging"}],
-                     {"package", "verify", "publish"})
+        # 0012 Story 04.0 Task 05 (ADR 0005 D9): rows come from a job of the
+        # destination's tier and class (here the class matrix jobs) and the
+        # registered destinations; a disabled release destination still gets
+        # its row (stage.py refuses it loudly), a staging one only if enabled.
+        data = _data([{"job": "release-gh", "tier": "release", "permission_class": "repo-write",
+                       "matrix": True},
+                      {"job": "staging-s3", "tier": "staging", "permission_class": "oidc",
+                       "matrix": True}],
+                     {"package", "verify", "publish"},
+                     [{"name": "gh", "enabled": False, "tier": "release",
+                       "permission_class": "repo-write"},
+                      {"name": "s3", "enabled": True, "tier": "staging",
+                       "permission_class": "oidc"},
+                      {"name": "s3-off", "enabled": False, "tier": "staging",
+                       "permission_class": "oidc"}])
+        release_row = {"job": "release-gh", "tier": "release", "class": "repo-write",
+                       "destination": "gh"}
+        staging_row = {"job": "staging-s3", "tier": "staging", "class": "oidc",
+                       "destination": "s3"}
         rows = {(e, r): plan.matrix_for(e, r, "full", data=data)["publish"]
                 for e, r in (("tag", "refs/tags/v2.0.0"), ("push", "refs/heads/master"),
                              ("push", "refs/heads/feature"), ("pr", "refs/pull/1/merge"),
                              ("schedule", "refs/heads/master"))}
-        self.assertEqual(rows[("tag", "refs/tags/v2.0.0")],
-                         [{"job": "release-gh", "tier": "release"}])
-        self.assertEqual(rows[("push", "refs/heads/master")],
-                         [{"job": "staging-s3", "tier": "staging"}])
+        self.assertEqual(rows[("tag", "refs/tags/v2.0.0")], [release_row])
+        self.assertEqual(rows[("push", "refs/heads/master")], [staging_row])
         for key in (("push", "refs/heads/feature"), ("pr", "refs/pull/1/merge"),
                     ("schedule", "refs/heads/master")):
             self.assertEqual(rows[key], [], key)
         # A tag is always the full pipeline: its release rows survive a `docs` classification.
         docs_tag = plan.matrix_for("tag", "refs/tags/v2.0.0", "docs", data=data)
-        self.assertEqual(docs_tag["publish"], [{"job": "release-gh", "tier": "release"}])
+        self.assertEqual(docs_tag["publish"], [release_row])
         # A docs-only master push is lint only: nothing is staged.
         docs_master = plan.matrix_for("push", "refs/heads/master", "docs", data=data)
         self.assertEqual(docs_master["publish"], [])

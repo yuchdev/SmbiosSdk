@@ -1,12 +1,16 @@
 {
   "schema": 1,
-  "about": "Publish destination registry (ADR 0005 D9; checked by policy rule P12). Created empty by milestone 0014 Story 02.0 Task 03; entries owned by milestone 0012 Story 04.0 (Task 02 adds github-release, Task 05 adds the rest and moves each module to scripts/ci/destinations/<name>.py). Entry form: {name, enabled, tier, permission_class, environment, credentials}. github-release (Task 02) and vcpkg-registry (Task 03: phases prepare, unprivileged, and branch, which creates registry/v<version> and never opens a PR) ship enabled: false: no release-tier destination may be enabled until threat-model settings S-1..S-8 are applied, read back and recorded in docs/dev/ci.md and the milestone status (docs/security/2026-11-18-release-and-publish-automation.md, standing constraint 12); stage.py publish refuses a disabled destination except with --dry-run. How to add one: docs/dev/adding-a-publish-destination.md.",
+  "about": "Publish destination registry (ADR 0005 D9; checked by policy rule P12; read by plan.py and stage.py publish). Created empty by milestone 0014 Story 02.0 Task 03; milestone 0012 Story 04.0 Task 02 added github-release, Task 03 vcpkg-registry (phases prepare, unprivileged, and branch, which creates registry/v<version> and never opens a PR), and Task 05 s3-staging, and moved every module to scripts/ci/destinations/<name with - as _>.py behind the D9 interface (NAME, REQUIRED_ENV, validate, publish, check_published). Entry form: {name, enabled, tier, permission_class, environment, credentials, binary_cache_policy}; environment equals tier; binary_cache_policy is implied by the tier and checked by P12 (release: none-only, staging: any; threat model 2026-11-18 requirement 17, CR-2); credentials are the CI_PUBLISH_* names the class job maps from the entry's environment, and must also be in the module's REQUIRED_ENV. Every entry ships enabled: false: no release-tier destination may be enabled until threat-model settings S-1..S-8 are applied, read back and recorded in docs/dev/ci.md and the milestone status, and s3-staging additionally needs S-9 (bucket, OIDC trust bound to this repository and the staging environment, a role scoped to staging/* with no delete) read back and recorded there (docs/security/2026-11-18-release-and-publish-automation.md, standing constraint 12, RP-14). stage.py publish refuses a disabled destination except with --dry-run; plan.py still schedules a disabled release-tier destination (so a premature v* tag fails loudly) but never a disabled staging one. How to add one: docs/dev/adding-a-publish-destination.md.",
   "destinations": [
     {"name": "github-release", "enabled": false, "tier": "release",
      "permission_class": "repo-write", "environment": "release",
-     "credentials": ["CI_PUBLISH_TOKEN"]},
+     "credentials": ["CI_PUBLISH_TOKEN"], "binary_cache_policy": "none-only"},
     {"name": "vcpkg-registry", "enabled": false, "tier": "release",
      "permission_class": "repo-write", "environment": "release",
-     "credentials": ["CI_PUBLISH_TOKEN"]}
+     "credentials": ["CI_PUBLISH_TOKEN"], "binary_cache_policy": "none-only"},
+    {"name": "s3-staging", "enabled": false, "tier": "staging",
+     "permission_class": "oidc", "environment": "staging",
+     "credentials": ["CI_PUBLISH_S3_BUCKET", "CI_PUBLISH_S3_PREFIX", "CI_PUBLISH_S3_ROLE",
+                     "CI_PUBLISH_S3_REGION"], "binary_cache_policy": "any"}
   ]
 }

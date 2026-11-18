@@ -71,7 +71,7 @@ RECHECK_COUNT = 5
 API_BASE = "https://api.github.com"
 DOWNLOAD_ORIGIN = "https://github.com"
 #: Where ``github.com/<repo>/releases/download/...`` may redirect (the same set
-#: as ``publish_github_release.DOWNLOAD_HOSTS``; a test pins the two together).
+#: as ``destinations.github_release.DOWNLOAD_HOSTS``; a test pins the two together).
 REDIRECT_HOSTS: FrozenSet[str] = frozenset({"objects.githubusercontent.com",
                                             "release-assets.githubusercontent.com",
                                             "github-releases.githubusercontent.com"})

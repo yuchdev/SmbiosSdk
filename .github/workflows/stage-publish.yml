@@ -1,5 +1,27 @@
-# Reusable `publish` stage, release tier (milestone 0012 Story 04.0 Tasks 02-03;
-# ADR 0005 D6, D8, D9). Five jobs, all guarded to a v* tag push. The GitHub
+# Reusable `publish` stage (milestone 0012 Story 04.0 Tasks 02-05; ADR 0005 D6,
+# D8, D9). Called by ci.yml's publish-release (v* tag) and publish-staging
+# (push to master) jobs; every job here is guarded to exactly one of the two.
+#
+# ADR 0005 D9 (Task 05): one matrix job per tier and permission class,
+# publish-<tier>-<class>, runs every scheduled single-phase destination of
+# that class (the plan job's publish_<class> output, passed in as an input,
+# one matrix row per destination; stage.py reads the row as CI_DESTINATION and
+# refuses a destination whose tier and class are not the job's). Adding a
+# destination to a class that has such a job needs no edit here, as long as
+# its credentials are among the CI_PUBLISH_* names the job's publish step
+# already maps (policy P12 checks it). A new class or tier is one reviewed
+# change here plus publish_jobs.json:
+#
+#   publish-release-repo-write: contents: write, environment release, v* tag
+#     only. Empty today: github-release and vcpkg-registry are phased (D6) and
+#     keep the jobs below.
+#   publish-staging-oidc: id-token: write, environment staging, push to
+#     master only, after the same run's verify (the verify gate). s3-staging
+#     (ships enabled: false; enabling it needs setting S-9 read back first).
+#     The OIDC token is requested by stage.py itself; only the staging
+#     environment's CI_PUBLISH_S3_* secrets are mapped, in the step's env:.
+#
+# The phased release-tier destinations keep the D6 sequence. The GitHub
 # Release: two jobs, both permission class repo-write, both in the `release`
 # environment, then an unprivileged post-publish check (Task 04):
 #
@@ -93,6 +115,16 @@ on:
         type: boolean
         required: false
         default: false
+      publish_repo_write:
+        description: JSON list of the repo-write class matrix's destinations (plan output publish_repo_write; ADR 0005 D9)
+        type: string
+        required: false
+        default: '[]'
+      publish_oidc:
+        description: JSON list of the oidc class matrix's destinations (plan output publish_oidc; ADR 0005 D9)
+        type: string
+        required: false
+        default: '[]'
 
 permissions:
   contents: read
@@ -388,3 +420,117 @@ jobs:
           CI_BUILD_BINARY_CACHE: ${{ matrix.binary_cache }}
           CI_REGISTRY_PREPARED: ${{ matrix.prepared }}
           CI_PUBLISH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ADR 0005 D9 (Task 05): the release-tier repo-write class matrix. Same
+  # constraints as release-draft (one publish step, the token only in its
+  # env:, dist by artifact ID); stage.py binds CI_DESTINATION to this job's
+  # tier and class (publish_jobs.json) and refuses a phased destination.
+  publish-release-repo-write:
+    name: publish (${{ matrix.destination }})
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && inputs.publish_repo_write != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release
+    # permissions: write the repository for a single-phase repo-write destination (ADR 0005 D9).
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        destination: ${{ fromJSON(inputs.publish_repo_write) }}
+        include:
+          - manifest_sha256: ${{ inputs.manifest_sha256 }}
+            verified_manifest_sha256: ${{ inputs.verified_manifest_sha256 }}
+            binary_cache: ${{ inputs.binary_cache }}
+    env:
+      CI_JOB: publish-release-repo-write
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
+        with:
+          persist-credentials: false
+
+      - name: Download dist
+        id: download-dist
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with:
+          artifact-ids: ${{ inputs.dist_artifact_id }}
+          path: ${{ runner.temp }}/artifacts/dist
+          merge-multiple: true
+
+      - name: Publish
+        id: publish
+        run: python3 scripts/ci/stage.py publish
+        timeout-minutes: 8
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+          CI_DESTINATION: ${{ matrix.destination }}
+          CI_MANIFEST_SHA256: ${{ matrix.manifest_sha256 }}
+          CI_VERIFIED_MANIFEST_SHA256: ${{ matrix.verified_manifest_sha256 }}
+          CI_BUILD_BINARY_CACHE: ${{ matrix.binary_cache }}
+          CI_PUBLISH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ADR 0005 D9 (Task 05): the staging-tier oidc class matrix (s3-staging).
+  # Push to master only, never a PR, fork, tag, nightly or dispatch (P8/P12
+  # tier clause); after the same run's verify (CI_VERIFIED_MANIFEST_SHA256,
+  # checked by stage.py). id-token: write lets stage.py request the OIDC token
+  # (audience sts.amazonaws.com); the destination writes it to a 0600 file and
+  # passes only AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN to the pinned aws
+  # CLI. The bucket, prefix, role and region are secrets of the staging
+  # environment, mapped only here. Create-only writes under staging/<version>/
+  # <run-id>-<attempt>/, never a delete; the cloud-side role policy (S-9) is
+  # the boundary, not this file.
+  publish-staging-oidc:
+    name: publish (${{ matrix.destination }})
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.publish_oidc != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: staging
+    # permissions: request the OIDC token the staging destination exchanges for its role (ADR 0005 D9).
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        destination: ${{ fromJSON(inputs.publish_oidc) }}
+        include:
+          - manifest_sha256: ${{ inputs.manifest_sha256 }}
+            verified_manifest_sha256: ${{ inputs.verified_manifest_sha256 }}
+            binary_cache: ${{ inputs.binary_cache }}
+    env:
+      CI_JOB: publish-staging-oidc
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
+        with:
+          persist-credentials: false
+
+      - name: Download dist
+        id: download-dist
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with:
+          artifact-ids: ${{ inputs.dist_artifact_id }}
+          path: ${{ runner.temp }}/artifacts/dist
+          merge-multiple: true
+
+      - name: Publish
+        id: publish
+        run: python3 scripts/ci/stage.py publish
+        timeout-minutes: 8
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+          CI_DESTINATION: ${{ matrix.destination }}
+          CI_MANIFEST_SHA256: ${{ matrix.manifest_sha256 }}
+          CI_VERIFIED_MANIFEST_SHA256: ${{ matrix.verified_manifest_sha256 }}
+          CI_BUILD_BINARY_CACHE: ${{ matrix.binary_cache }}
+          CI_PUBLISH_S3_BUCKET: ${{ secrets.CI_PUBLISH_S3_BUCKET }}
+          CI_PUBLISH_S3_PREFIX: ${{ secrets.CI_PUBLISH_S3_PREFIX }}
+          CI_PUBLISH_S3_ROLE: ${{ secrets.CI_PUBLISH_S3_ROLE }}
+          CI_PUBLISH_S3_REGION: ${{ secrets.CI_PUBLISH_S3_REGION }}

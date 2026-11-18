@@ -71,6 +71,9 @@ jobs:
       package: ${{ steps.plan.outputs.package }}
       verify: ${{ steps.plan.outputs.verify }}
       publish: ${{ steps.plan.outputs.publish }}
+      publish_repo_write: ${{ steps.plan.outputs.publish_repo_write }}
+      publish_oidc: ${{ steps.plan.outputs.publish_oidc }}
+      publish_token_only: ${{ steps.plan.outputs.publish_token_only }}
       plan: ${{ steps.plan.outputs.plan }}
     env:
       CI_PLATFORM: github
@@ -177,13 +180,20 @@ jobs:
   # passed (stage-verify.yml's verify-gate; empty unless all legs verified,
   # and publish refuses an empty or different value). After release-promote,
   # stage-publish.yml's post-publish job re-checks the public release
-  # anonymously (Task 04, constraint 11).
+  # anonymously (Task 04, constraint 11). Task 05 (ADR 0005 D9): the plan's
+  # per-class matrices (publish_<class>) feed stage-publish.yml's
+  # publish-<tier>-<class> jobs. Both callers grant the union of
+  # stage-publish.yml's job permissions, because GitHub checks every nested
+  # job of a called workflow against the caller's grant, including the jobs
+  # this event skips; each nested job declares only its own permissions and
+  # carries its own tier guard.
   publish-release:
     needs: [plan, build, package, verify]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.plan.outputs.publish != '[]'
-    # permissions: stage-publish.yml's release-draft and release-promote create, upload to and promote the GitHub Release, and registry-pr creates the registry/v<version> branch; a called workflow's jobs cannot exceed this caller's grant (ADR 0005 D6).
+    # permissions: stage-publish.yml's release-draft and release-promote create, upload to and promote the GitHub Release, registry-pr creates the registry/v<version> branch, and publish-staging-oidc (skipped on a tag) requests an OIDC token; a called workflow's jobs cannot exceed this caller's grant (ADR 0005 D6, D9).
     permissions:
       contents: write
+      id-token: write
     uses: ./.github/workflows/stage-publish.yml
     with:
       manifest_sha256: ${{ fromJSON(needs.package.outputs.manifest_sha256) }}
@@ -193,6 +203,31 @@ jobs:
       # Story 04.0 Task 03: the registry jobs run only when the plan has their
       # rows, i.e. on a final v<X.Y.Z> tag, never a pre-release (constraint 8).
       registry: ${{ contains(needs.plan.outputs.publish, '"registry-pr"') }}
+      publish_repo_write: ${{ needs.plan.outputs.publish_repo_write }}
+      publish_oidc: ${{ needs.plan.outputs.publish_oidc }}
+
+  # Story 04.0 Task 05 (ADR 0005 D9): the staging tier. Reached only from a
+  # push to master (P12 tier clause), never a PR, fork, tag, nightly or
+  # dispatch, only after the same run's verify passed, and only when the plan
+  # has staging rows: an enabled staging destination (s3-staging ships
+  # disabled, so today this job is always skipped). Same inputs as
+  # publish-release; staging accepts binary_cache restored (a disposable copy,
+  # CR-2) but still cross-checks it against the build job.
+  publish-staging:
+    needs: [plan, build, package, verify]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.plan.outputs.publish != '[]'
+    # permissions: stage-publish.yml's publish-staging-oidc requests an OIDC token for the staging role, and its release-tier jobs (skipped on a master push) write the repository; a called workflow's jobs cannot exceed this caller's grant (ADR 0005 D6, D9).
+    permissions:
+      contents: write
+      id-token: write
+    uses: ./.github/workflows/stage-publish.yml
+    with:
+      manifest_sha256: ${{ fromJSON(needs.package.outputs.manifest_sha256) }}
+      dist_artifact_id: ${{ needs.package.outputs.dist_artifact_id }}
+      binary_cache: ${{ format('{{"linux-x64":{0},"windows-x64":{1},"macos-arm64":{2}}}', needs.build.outputs.binary_cache_linux_x64, needs.build.outputs.binary_cache_windows_x64, needs.build.outputs.binary_cache_macos_arm64) }}
+      verified_manifest_sha256: ${{ needs.verify.outputs.verified_manifest_sha256 && fromJSON(needs.verify.outputs.verified_manifest_sha256) || '' }}
+      publish_repo_write: ${{ needs.plan.outputs.publish_repo_write }}
+      publish_oidc: ${{ needs.plan.outputs.publish_oidc }}
 
   # Story 04.0 Task 01 (plan E9): one run-level table of at most 40 lines
   # from the summary-<job>-<leg> artifacts every job uploads, and, when a

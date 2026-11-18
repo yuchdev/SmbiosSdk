@@ -1,17 +1,26 @@
 {
   "schema": 1,
-  "about": "Policy rules P8 and P12 (milestone 0014 Story 02.0 Task 03; ADR 0005 D6/D9). The only jobs that may hold a publish-capable permission (contents: write, pull-requests: write, id-token: write, packages: write) or read a secret: 'jobs' are publish-stage jobs in stage-publish.yml, per permission class and tier; 'callers' are the jobs that call stage-publish.yml. Each entry: file, job, tier (release or staging), permission_class (jobs only: repo-write, oidc, token-only), permissions. Milestone 0012 Story 04.0 Task 02 adds the GitHub Release sequence: release-draft and release-promote (repo-write, contents: write only - no pull-requests: write, threat model 2026-11-18 RP-9) and their ci.yml caller publish-release. Task 03 adds registry-pr (repo-write, contents: write only: it creates the branch registry/v<version> through the Git Data API and never opens or approves a PR, RP-9, constraint 10). Optional keys read by plan.py: 'prerelease': false means no row on a v<X.Y.Z>-<pre> tag (constraint 8); 'prepare_job' names the unprivileged job (registry-prepare: contents: read, no environment, no credential) that runs the toolchain first and is deliberately not an entry of this list (RP-2); plan.py emits its row before the entry's and omits both together.",
+  "about": "Policy rules P8 and P12 (milestone 0014 Story 02.0 Task 03; ADR 0005 D6/D9). The only jobs that may hold a publish-capable permission (contents: write, pull-requests: write, id-token: write, packages: write) or read a secret: 'jobs' are publish-stage jobs in stage-publish.yml, per permission class and tier; 'callers' are the jobs that call stage-publish.yml. Each entry: file, job, tier (release or staging), permission_class (jobs only: repo-write, oidc, token-only), permissions. Milestone 0012 Story 04.0 Task 02 adds the GitHub Release sequence: release-draft and release-promote (repo-write, contents: write only - no pull-requests: write, threat model 2026-11-18 RP-9) and their ci.yml caller publish-release. Task 03 adds registry-pr (repo-write, contents: write only: it creates the branch registry/v<version> through the Git Data API and never opens or approves a PR, RP-9, constraint 10). Task 05 (ADR 0005 D9) binds every job: either to one destination and phase ('destination', 'phase': the D6 sequence of a phased destination, which stage.py publish enforces through CI_JOB) or, with 'matrix': true, as the one matrix job of its tier and permission class (publish-<tier>-<class>), which runs every scheduled single-phase destination of that class (plan.py output publish_<class>; CI_DESTINATION). Adding a destination to a class that has a matrix job needs no workflow edit. Both callers grant the union of the jobs' permissions (contents: write, id-token: write) because GitHub validates every nested job of a called workflow against its caller's grant, also the jobs the event skips; each job still declares only its own. Optional keys read by plan.py: 'prerelease': false means no row on a v<X.Y.Z>-<pre> tag (constraint 8); 'prepare_job' names the unprivileged job (registry-prepare: contents: read, no environment, no credential) that runs the toolchain first and is deliberately not an entry of this list (RP-2); plan.py emits its row before the entry's and omits both together.",
   "jobs": [
     {"file": "stage-publish.yml", "job": "release-draft", "tier": "release",
-     "permission_class": "repo-write", "permissions": ["contents: write"]},
+     "permission_class": "repo-write", "permissions": ["contents: write"],
+     "destination": "github-release", "phase": "draft"},
     {"file": "stage-publish.yml", "job": "release-promote", "tier": "release",
-     "permission_class": "repo-write", "permissions": ["contents: write"]},
+     "permission_class": "repo-write", "permissions": ["contents: write"],
+     "destination": "github-release", "phase": "promote"},
     {"file": "stage-publish.yml", "job": "registry-pr", "tier": "release",
      "permission_class": "repo-write", "permissions": ["contents: write"],
-     "prerelease": false, "prepare_job": "registry-prepare"}
+     "destination": "vcpkg-registry", "phase": "branch",
+     "prerelease": false, "prepare_job": "registry-prepare"},
+    {"file": "stage-publish.yml", "job": "publish-release-repo-write", "tier": "release",
+     "permission_class": "repo-write", "permissions": ["contents: write"], "matrix": true},
+    {"file": "stage-publish.yml", "job": "publish-staging-oidc", "tier": "staging",
+     "permission_class": "oidc", "permissions": ["id-token: write"], "matrix": true}
   ],
   "callers": [
     {"file": "ci.yml", "job": "publish-release", "tier": "release",
-     "permissions": ["contents: write"]}
+     "permissions": ["contents: write", "id-token: write"]},
+    {"file": "ci.yml", "job": "publish-staging", "tier": "staging",
+     "permissions": ["contents: write", "id-token: write"]}
   ]
 }

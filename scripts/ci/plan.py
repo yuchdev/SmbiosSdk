@@ -16,16 +16,27 @@ model CR-6/CR-8: single-line JSON, random per-call delimiter):
     on every full-classified event but a branch push (ADR 0005 D7; the same
     events whose ``build`` list holds those legs, from ``tiers.full``). Until a
     stage is defined its list is ``[]`` and the plan says ``not run: stage not
-    defined`` for it. ``publish`` rows come
-    only from ``scripts/ci/publish_jobs.json``: ``release``-tier jobs on a
-    ``tag`` event, ``staging``-tier jobs on a push to ``refs/heads/master``,
-    nothing on any other event; a pre-release tag ``v<X.Y.Z>-<pre>`` gets no
+    defined`` for it. ``publish`` rows come only from
+    ``scripts/ci/publish_jobs.json`` and ``scripts/ci/publish_destinations.json``
+    (:func:`_publish_rows`): ``release``-tier rows on a ``tag`` event,
+    ``staging``-tier rows on a push to ``refs/heads/master``, nothing on any
+    other event; a pre-release tag ``v<X.Y.Z>-<pre>`` gets no
     ``registry-prepare``/``registry-pr`` rows (Story 04.0 Task 03, threat model
     constraint 8). ``publish`` (defined by Story 04.0 Task 02)
     also counts as ``not run: stage not defined`` whenever ``verify`` is not
     defined: it may only run after the same run's verify (ADR 0005 D6), so
     without verify it gets no row at all (fail closed). ``verify`` is defined
     since Story 04.0 Task 04 and lists the same packaging legs as ``package``.
+``publish_repo_write``, ``publish_oidc``, ``publish_token_only``
+    The publish matrix **per permission class** (ADR 0005 D9; Story 04.0 Task
+    05): JSON lists of destination names for the class matrix job
+    ``publish-<tier>-<class>`` of ``stage-publish.yml`` (``matrix.destination``,
+    read by ``stage.py`` as ``CI_DESTINATION``). A destination that no
+    ``publish_jobs.json`` job names (a single-phase destination) lands here,
+    so adding one to an existing class needs no workflow edit; ``ci.yml``
+    passes each list to ``stage-publish.yml``, whose class job is skipped when
+    it is ``[]``. Destinations a job names (``github-release``,
+    ``vcpkg-registry``: phased, D6) keep their own jobs.
 ``plan``
     The whole plan object (per-leg run/skip reasons, per-stage reasons, the
     runner label of every scheduled leg). The ``report`` job reads it back as
@@ -97,6 +108,7 @@ from reporters import Reporter  # noqa: E402
 LEGS_FILE = Path(_HERE) / "legs.json"
 PINS_FILE = Path(_HERE) / "pins.json"
 PUBLISH_JOBS_FILE = Path(_HERE) / "publish_jobs.json"
+PUBLISH_DESTINATIONS_FILE = Path(_HERE) / "publish_destinations.json"
 
 #: Neutral ``CI_EVENT`` values a plan accepts. ``manual`` is rejected: the
 #: maintainer removed ``workflow_dispatch``, so nothing may plan
@@ -106,8 +118,11 @@ EVENTS: Tuple[str, ...] = ("push", "pr", "schedule", "tag")
 LEG_JOBS: Tuple[str, ...] = ("build", "sanitizers", "gui")
 #: Milestone 0012 stages (ADR 0005 extension of the tier table).
 PIPELINE_STAGES: Tuple[str, ...] = ("package", "verify", "publish")
+#: Permission classes (ADR 0005 D9) and the job output carrying each class's matrix.
+CLASS_OUTPUTS: Dict[str, str] = {"repo-write": "publish_repo_write", "oidc": "publish_oidc",
+                                 "token-only": "publish_token_only"}
 #: Every job-output name the plan sets, in the order it sets them.
-OUTPUTS: Tuple[str, ...] = LEG_JOBS + PIPELINE_STAGES + ("plan",)
+OUTPUTS: Tuple[str, ...] = LEG_JOBS + PIPELINE_STAGES + tuple(CLASS_OUTPUTS.values()) + ("plan",)
 #: Publish tiers (ADR 0005 D9) and the only event that reaches each.
 PUBLISH_TIERS: Tuple[str, ...] = ("release", "staging")
 MASTER_REF = "refs/heads/master"
@@ -126,6 +141,7 @@ STAGE_REASONS: Tuple[str, ...] = (RUN, NOT_RUN_TIER, NOT_RUN_UNDEFINED)
 
 _LEG_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 _JOB_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+_DESTINATION = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 _LABEL = re.compile(r"^[0-9A-Za-z._-]{1,40}$")
 _BRANCH_REF = re.compile(r"^refs/heads/[A-Za-z0-9._/+-]{1,200}$")
 _REF_SHAPES: Dict[str, "re.Pattern[str]"] = {
@@ -157,12 +173,15 @@ class PlanData:
         publish_jobs: ``publish_jobs.json`` ``jobs`` entries.
         defined_stages: Pipeline stages that exist (default: those in
             ``stage.STEPS``); an undefined stage is ``not run: stage not defined``.
+        destinations: ``publish_destinations.json`` ``destinations`` entries
+            (Story 04.0 Task 05: no registered destination, no publish row).
     """
 
     legs: Mapping[str, Any]
     pins: Mapping[str, Any]
     publish_jobs: Sequence[Mapping[str, Any]] = ()
     defined_stages: FrozenSet[str] = field(default_factory=frozenset)
+    destinations: Sequence[Mapping[str, Any]] = ()
 
 
 def _read_json(path: Path) -> Any:
@@ -174,7 +193,8 @@ def _read_json(path: Path) -> Any:
 
 def load_data(legs_path: Path = LEGS_FILE, pins_path: Path = PINS_FILE,
               publish_path: Path = PUBLISH_JOBS_FILE,
-              defined_stages: Optional[FrozenSet[str]] = None) -> PlanData:
+              defined_stages: Optional[FrozenSet[str]] = None,
+              destinations_path: Path = PUBLISH_DESTINATIONS_FILE) -> PlanData:
     """Read and shape-check the plan's data files.
 
     Raises:
@@ -191,8 +211,13 @@ def load_data(legs_path: Path = LEGS_FILE, pins_path: Path = PINS_FILE,
     jobs = publish.get("jobs") if isinstance(publish, dict) else None
     if not (isinstance(jobs, list) and all(isinstance(j, dict) for j in jobs)):
         raise PlanError(f"{publish_path.name}: expected a 'jobs' list of objects")
+    registry = _read_json(destinations_path)
+    entries = registry.get("destinations") if isinstance(registry, dict) else None
+    if not (isinstance(entries, list) and all(isinstance(e, dict) for e in entries)):
+        raise PlanError(f"{destinations_path.name}: expected a 'destinations' list of objects")
     return PlanData(legs, pins, tuple(jobs),
-                    _default_defined_stages() if defined_stages is None else defined_stages)
+                    _default_defined_stages() if defined_stages is None else defined_stages,
+                    tuple(entries))
 
 
 # ---------------------------------------------------------------------------
@@ -277,45 +302,119 @@ def final_release_tag(ref: str) -> bool:
     return m is not None and m.group(2) is None
 
 
+def _publish_tier(event: str, ref: str) -> Optional[str]:
+    """The publish tier an event reaches: ``release`` on a tag, ``staging`` on a master push."""
+    if event == "tag":
+        return "release"
+    if event == "push" and ref == MASTER_REF:
+        return "staging"
+    return None
+
+
+def _registered(data: PlanData, tier: str) -> Dict[str, Mapping[str, Any]]:
+    """Registry entries a ``tier`` event schedules, by name.
+
+    ``release``: every registered release-tier destination, enabled or not: a
+    disabled one still gets its row and ``stage.py`` refuses it loudly, so a
+    ``v*`` tag pushed before the settings of threat-model constraint 12 are
+    applied fails instead of silently publishing nothing (actor A5).
+    ``staging``: enabled entries only, so a disabled staging destination never
+    turns a routine ``master`` push red.
+
+    Raises:
+        PlanError: An entry with a malformed name, tier, class or flag.
+    """
+    out: Dict[str, Mapping[str, Any]] = {}
+    for entry in data.destinations:
+        name, entry_tier = entry.get("name"), entry.get("tier")
+        if not (isinstance(name, str) and _DESTINATION.fullmatch(name)
+                and entry_tier in PUBLISH_TIERS and entry.get("permission_class") in CLASS_OUTPUTS
+                and isinstance(entry.get("enabled"), bool)):
+            raise PlanError("publish_destinations.json: an entry needs a name, a known tier and "
+                            "permission class, and a boolean enabled")
+        if entry_tier == tier and (tier == "release" or entry["enabled"]):
+            out[name] = entry
+    return out
+
+
 def _publish_rows(event: str, ref: str, data: PlanData) -> List[Dict[str, str]]:
     """Return the publish rows of this event: release tier on ``tag``, staging on a master push.
 
-    An entry with ``"prerelease": false`` (``registry-pr``, 0012 Story 04.0 Task
-    03) gets no row on a pre-release tag ``v<X.Y.Z>-<pre>`` (threat model
-    2026-11-18 constraint 8: pre-releases never touch the registry), and
-    neither does its ``prepare_job`` (``registry-prepare``, the unprivileged
-    job that is deliberately not a ``publish_jobs.json`` entry, RP-2). When the
-    entry gets a row, its ``prepare_job`` row comes first.
+    Two kinds of ``publish_jobs.json`` job (Story 04.0 Task 05, ADR 0005 D9):
+
+    - a job bound to one destination and phase (``destination``/``phase``
+      keys; the D6 sequence of ``github-release`` and ``vcpkg-registry``) gets
+      one row when that destination is scheduled (:func:`_registered`);
+    - a permission-class matrix job (``"matrix": true``,
+      ``publish-<tier>-<class>``) gets one row per scheduled destination of
+      its tier and class that no bound job names: the class's matrix.
+
+    An entry with ``"prerelease": false`` (``registry-pr``, Task 03) gets no
+    row on a pre-release tag ``v<X.Y.Z>-<pre>`` (threat model 2026-11-18
+    constraint 8: pre-releases never touch the registry), and neither does its
+    ``prepare_job`` (``registry-prepare``, the unprivileged job that is
+    deliberately not a ``publish_jobs.json`` entry, RP-2). When the entry gets
+    a row, its ``prepare_job`` row comes first.
 
     Raises:
         PlanError: A ``publish_jobs.json`` entry has a malformed job, tier,
-            ``prerelease`` flag or ``prepare_job``.
+            class, ``prerelease`` flag, ``prepare_job`` or binding, or binds a
+            destination ``publish_destinations.json`` does not register.
     """
-    if event == "tag":
-        tier: Optional[str] = "release"
-    elif event == "push" and ref == MASTER_REF:
-        tier = "staging"
-    else:
-        tier = None
+    tier = _publish_tier(event, ref)
     final = event == "tag" and final_release_tag(ref)
+    scheduled = _registered(data, tier) if tier is not None else {}
+    registered = {str(e.get("name")) for e in data.destinations}
+    bound = {str(e.get("destination")) for e in data.publish_jobs if e.get("destination")}
     rows: List[Dict[str, str]] = []
     for entry in data.publish_jobs:
-        job, entry_tier = entry.get("job"), entry.get("tier")
+        job, entry_tier, cls = entry.get("job"), entry.get("tier"), entry.get("permission_class")
         prerelease, prepare = entry.get("prerelease", True), entry.get("prepare_job")
+        destination, phase, matrix = (entry.get("destination"), entry.get("phase"),
+                                      entry.get("matrix", False))
         if not (isinstance(job, str) and _JOB_NAME.fullmatch(job)
-                and entry_tier in PUBLISH_TIERS and isinstance(prerelease, bool)
+                and entry_tier in PUBLISH_TIERS and cls in CLASS_OUTPUTS
+                and isinstance(prerelease, bool) and isinstance(matrix, bool)
                 and (prepare is None or (isinstance(prepare, str)
-                                         and _JOB_NAME.fullmatch(prepare)))):
-            raise PlanError("publish_jobs.json: a job entry needs a job name, a known tier, "
-                            "and a boolean prerelease and job-name prepare_job if present")
+                                         and _JOB_NAME.fullmatch(prepare)))
+                and matrix == (destination is None)
+                and (destination is None or (isinstance(destination, str)
+                                             and _DESTINATION.fullmatch(destination)
+                                             and isinstance(phase, str)
+                                             and _JOB_NAME.fullmatch(phase)))):
+            raise PlanError("publish_jobs.json: a job entry needs a job name, a known tier and "
+                            "class, either a destination and phase or matrix true, and a "
+                            "boolean prerelease and job-name prepare_job if present")
+        if destination is not None and destination not in registered:
+            raise PlanError("publish_jobs.json: a job names a destination that "
+                            "publish_destinations.json does not register")
         if tier is None or entry_tier != tier:
             continue
         if event == "tag" and not prerelease and not final:
             continue  # constraint 8: no registry row (nor its prepare row) for a pre-release
+        if matrix:
+            for name, dest in scheduled.items():
+                if dest.get("permission_class") == cls and name not in bound:
+                    rows.append({"job": job, "tier": tier, "class": cls, "destination": name})
+            continue
+        if destination not in scheduled:
+            continue
         if prepare is not None:
-            rows.append({"job": prepare, "tier": tier})
-        rows.append({"job": job, "tier": tier})
+            rows.append({"job": prepare, "tier": tier, "class": "unprivileged",
+                         "destination": destination, "phase": "prepare"})
+        rows.append({"job": job, "tier": tier, "class": cls, "destination": destination,
+                     "phase": phase})
     return rows
+
+
+def class_matrices(rows: Sequence[Mapping[str, str]], data: PlanData) -> Dict[str, List[str]]:
+    """Return ``{output name: [destination, ...]}``: the class matrix job rows, per class (D9)."""
+    matrix_jobs = {str(e.get("job")) for e in data.publish_jobs if e.get("matrix") is True}
+    out: Dict[str, List[str]] = {output: [] for output in CLASS_OUTPUTS.values()}
+    for row in rows:
+        if row["job"] in matrix_jobs:
+            out[CLASS_OUTPUTS[row["class"]]].append(row["destination"])
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +438,8 @@ def matrix_for(event: str, ref: str, classification: str, *, pr_same_repo: bool 
 
     Returns:
         ``{"schema", "event", "classification", "lint", "build", "sanitizers",
-        "gui", "package", "verify", "publish", "legs", "stages", "runners"}``:
+        "gui", "package", "verify", "publish", "publish_repo_write",
+        "publish_oidc", "publish_token_only", "legs", "stages", "runners"}``:
         per-job leg lists in ``legs.json`` full-tier order, ``legs`` maps
         every tier leg to a :data:`LEG_REASONS` value, ``stages`` maps every
         pipeline stage to a :data:`STAGE_REASONS` value, ``runners`` maps every
@@ -403,6 +503,7 @@ def matrix_for(event: str, ref: str, classification: str, *, pr_same_repo: bool 
     plan["verify"] = packaging if stages["verify"] == RUN else []
     rows = _publish_rows(event, ref, data)
     plan["publish"] = rows if stages["publish"] == RUN else []
+    plan.update(class_matrices(plan["publish"], data))
     plan["legs"] = legs
     plan["stages"] = stages
     plan["runners"] = {leg: runner_label(leg, data) for leg in full if legs[leg] == RUN}

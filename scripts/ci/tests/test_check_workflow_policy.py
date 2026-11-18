@@ -207,17 +207,29 @@ class PublishJobShape(unittest.TestCase):
         Task 04 (constraint 11): ``post-publish`` likewise, after ``release-promote``.
         """
         root = gate.load_yaml((REAL_WORKFLOWS / "stage-publish.yml").read_text(encoding="utf-8"))
-        self.assertEqual(sorted(root["jobs"]), ["post-publish", "registry-pr", "registry-prepare",
-                                                "release-draft", "release-promote"])
+        self.assertEqual(sorted(root["jobs"]), ["post-publish", "publish-release-repo-write",
+                                                "publish-staging-oidc", "registry-pr",
+                                                "registry-prepare", "release-draft",
+                                                "release-promote"])
         phases = {"release-draft": ("github-release", "draft"),
                   "release-promote": ("github-release", "promote"),
                   "post-publish": ("github-release", "post-publish"),
                   "registry-prepare": ("vcpkg-registry", "prepare"),
                   "registry-pr": ("vcpkg-registry", "branch")}
+        # Task 05 (D9): one matrix job per tier and class; the destination is
+        # the matrix row (CI_DESTINATION), never a literal.
+        matrix_jobs = {"publish-release-repo-write", "publish-staging-oidc"}
         listed = {e["job"] for e in gate.load_policy().publish_jobs}
         for job_id, job in root["jobs"].items():
             with self.subTest(job=job_id):
                 runs = [str(st["run"]) for st in job["steps"] if "run" in st]
+                if job_id in matrix_jobs:
+                    self.assertEqual(runs, ["python3 scripts/ci/stage.py publish"])
+                    (step,) = [st for st in job["steps"] if "run" in st]
+                    self.assertEqual(" ".join(str(step["env"]["CI_DESTINATION"]).split()),
+                                     EXPR + " matrix.destination }}")
+                    self.assertIn(job_id, listed)
+                    continue
                 destination, phase = phases[job_id]
                 self.assertEqual(runs, [f"python3 scripts/ci/stage.py publish --destination "
                                         f"{destination} --only {phase}"])
@@ -414,11 +426,22 @@ class RegistryRules(_TmpCase):
         self.assertEqual((v.rule, v.expected), ("P12", "a staging-tier token-only job in "
                                                        "publish_jobs.json"))
 
-    def test_DisabledDestinationIsNotChecked(self) -> None:
+    def test_DisabledDestinationIsCheckedToo(self) -> None:
+        """Task 05 (strengthened): a disabled entry is checked like an enabled one.
+
+        Until Task 05 a disabled entry was skipped; now every entry must name an
+        existing module, a known tier and class and an environment equal to its
+        tier, because enabling it must need no other change. (The old test
+        asserted the opposite: that ``{"name": "x", "enabled": false}`` passed.)
+        """
         good = self.copy_good()
         self.edit_json(good / "publish_destinations.json",
                        lambda d: d["destinations"].append({"name": "x", "enabled": False}))
-        self.assertEqual(run_case(good), [])
+        found = run_case(good)
+        self.assertEqual(sorted(v.expected for v in found),
+                         ["existing module", "known permission class",
+                          "tier release or staging"])
+        self.assertTrue(all((v.rule, v.location) == ("P12", "x") for v in found))
 
     def test_PublishJobPermissionsOutsideItsClass(self) -> None:
         good = self.copy_good()
@@ -429,8 +452,11 @@ class RegistryRules(_TmpCase):
 
     def test_PublishJobListedButMissing(self) -> None:
         good = self.copy_good()
+        # Task 05: jobs[0] is now the staging oidc matrix job, and a second
+        # matrix job of one class is its own violation, so the ghost copies the
+        # bound release job instead.
         self.edit_json(good / "publish_jobs.json",
-                       lambda d: d["jobs"].append(dict(d["jobs"][0], job="ghost")))
+                       lambda d: d["jobs"].append(dict(d["jobs"][1], job="ghost")))
         (v,) = run_case(good)
         self.assertEqual((v.rule, v.expected), ("P12", "listed job exists"))
 

@@ -8,13 +8,14 @@ one-liners or tiny Python stubs written into a temporary directory.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import stat
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, NamedTuple, Optional, Sequence
+from typing import Dict, List, NamedTuple, Optional, Sequence, Set
 
 TESTS_DIR = Path(__file__).resolve().parent
 CI_DIR = TESTS_DIR.parent
@@ -131,3 +132,50 @@ def path_with(directory: Path) -> str:
 def rc1_bytes(lines: Sequence[str]) -> int:
     """Return the printed size of ``lines`` in bytes (newline-joined, UTF-8)."""
     return len("\n".join(lines).encode("utf-8"))
+
+
+#: Destination modules (ADR 0005 D9; milestone 0012 Story 04.0 Task 05).
+DESTINATIONS_DIR = CI_DIR / "destinations"
+
+
+def used_names(source: str) -> Set[str]:
+    """Names a module's source imports, uses as ``module.attr`` or calls directly (AST scan).
+
+    The scan behind the threat model 2026-11-18 constraint 2 / RP-2 tests:
+    ``import x.y`` records ``x``; ``from x import y`` records ``x`` and
+    ``x.y``; ``os.execv`` records ``os.exec`` (every ``os.exec*``) and
+    ``os.spawnv`` ``os.spawn``; a bare call ``eval(...)`` records ``eval``.
+    Parsing a file that does not exist raises, so a test pointed at a moved
+    module errors instead of passing.
+    """
+    used: Set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            used |= {a.name.split(".")[0] for a in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            used.add(node.module.split(".")[0])
+            used |= {f"{node.module}.{a.name}" for a in node.names}
+        elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            name = f"{node.value.id}.{node.attr}"
+            for prefix in ("os.exec", "os.spawn"):
+                if name.startswith(prefix):
+                    name = prefix
+            used.add(name)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            used.add(node.func.id)
+    return used
+
+
+def in_process_destination_modules(registry: Path = CI_DIR / "publish_destinations.json"
+                                   ) -> List[Path]:
+    """Every registered destination module of a class whose token lives in-process.
+
+    ``repo-write`` and ``token-only`` (policy ``IN_PROCESS_CLASSES``): their
+    credential is a token held by ``stage.py``, so the module may start no
+    child process (RP-2). Read from the real registry, so a new destination of
+    those classes is scanned without editing a test.
+    """
+    data = json.loads(registry.read_text(encoding="utf-8"))
+    return [DESTINATIONS_DIR / (str(e["name"]).replace("-", "_") + ".py")
+            for e in data["destinations"]
+            if e.get("permission_class") in ("repo-write", "token-only")]
