@@ -623,14 +623,25 @@ class RunTest(unittest.TestCase):
                                      f"-L{prefix}/lib -lsmbios_c\n")
                 if argv[0] == "cc":
                     return mock.Mock(returncode=0, stdout="")
+                if argv[0] == "/usr/bin/nm":  # check 6 (0012 Story 04.0 Task 04)
+                    self.assertEqual(argv[1:3], ["-D", "--defined-only"])
+                    return mock.Mock(returncode=0, stdout=nm_out)
                 if argv[0].endswith("c-consumer"):
                     return mock.Mock(returncode=0, stdout="smbios_open=no-table\n")
                 return cxx(argv, **kw)
+            nm_out = "0000 T smbios_open\n0000 T smbios_close\n"
             with mock.patch.object(vra, "host_leg", return_value=LEG), \
                     mock.patch.object(vra, "_which", side_effect=lambda n, e: n[0]), \
+                    mock.patch.object(vra.export_symbols.shutil, "which",
+                                      return_value="/usr/bin/nm"), \
                     mock.patch("platform.system", return_value="Linux"), \
                     mock.patch("subprocess.run", side_effect=fake):
                 lines = vra.run(archive, work, environ={"PATH": "/usr/bin", "CC": "cc"})
+                self.assertIn("exports ok (2 smbios_* symbols)", lines)
+                nm_out = "0000 T smbios_open\n0000 T _ZN6smbios6SMBiosC1Ev\n"
+                with self.assertRaises(vra.VerifyError) as cm:
+                    vra.run(archive, work, environ={"PATH": "/usr/bin", "CC": "cc"})
+                self.assertIn("1 exported symbol(s) outside smbios_*", str(cm.exception))
         self.assertIn("c: smbios_open=no-table", lines)
         self.assertEqual(lines[-1], "cxx: formatters=4 type17=Memory Device fields=15")
 

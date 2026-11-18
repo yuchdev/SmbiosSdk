@@ -118,6 +118,8 @@ class Tree:
     entry: Optional[Path] = None
     legs_file: Path = stage.LEGS_FILE
     test_sets_file: Path = ctest_report.TEST_SETS_FILE
+    #: P4 budgets; a job's recorded ``ruling_minutes`` raises C11's ceiling for that job only.
+    budgets_file: Path = Path(_HERE) / "step_budgets.json"
     fixtures_dir: Path = POLICY_FIXTURES
     scan_dirs: Tuple[Path, ...] = ()
 
@@ -624,13 +626,32 @@ class Checker:
                        [f"{j}: bootstrap_vcpkg, cache report, cache restore/save"
                         for j in impl.get("jobs", [])])
 
+    def _rulings(self) -> Dict[str, int]:
+        """Job -> ``ruling_minutes`` recorded (with its reason) in ``step_budgets.json``.
+
+        Milestone 0012 Story 04.0 Task 04: the maintainer's 2026-11-18 ruling gives
+        cold-dependency-build steps 45 minutes, which puts their jobs over C11's
+        ceiling. Such a job may exceed the ceiling up to its recorded ruling and no
+        further; every other job keeps the ceiling. A ruling without a reason text
+        does not count (P4 rejects it too).
+        """
+        try:
+            jobs = json.loads(self.tree.budgets_file.read_text(encoding="utf-8")).get("jobs", {})
+        except (OSError, ValueError, AttributeError):
+            return {}
+        return {str(name): entry["ruling_minutes"] for name, entry in jobs.items()
+                if isinstance(entry, dict) and type(entry.get("ruling_minutes")) is int
+                and isinstance(entry.get("ruling"), str) and entry["ruling"].strip()}
+
     def _budget(self, rid: str, expected: str, impl: Mapping[str, Any]) -> Finding:
         ceiling = int(impl.get("job_ceiling_minutes", 30))
         want = str(impl.get("ctest_timeout", "60"))
+        rulings = self._rulings()
         problems: List[str] = []
         for job, sjs in self.workflows.jobs.items():
             for sj in sjs:
-                if sj.timeout is None or sj.timeout > ceiling:
+                limit = max(ceiling, rulings.get(sj.name, ceiling))
+                if sj.timeout is None or sj.timeout > limit:
                     problems.append(f"{sj.workflow}/{sj.name} job timeout")
                 if sj.steps_without_timeout:
                     problems.append(f"{sj.workflow}/{sj.name} step timeout")
@@ -650,8 +671,10 @@ class Checker:
                     problems.append(f"{key} {event.name} ctest --timeout")
         actual = "hard" if not problems else "missing"
         return Finding(rid, expected, actual, problems[0] if problems else "",
-                       [f"every job timeout-minutes <= {ceiling}, every step timeout-minutes, "
-                        f"ctest --timeout {want}"])
+                       [f"every job timeout-minutes <= {ceiling}"
+                        + (f" (ruled: {', '.join(f'{j} {m}' for j, m in sorted(rulings.items()))})"
+                           if rulings else "")
+                        + f", every step timeout-minutes, ctest --timeout {want}"])
 
     def _policy(self, rid: str, expected: str, impl: Mapping[str, Any]) -> Finding:
         problems: List[str] = []

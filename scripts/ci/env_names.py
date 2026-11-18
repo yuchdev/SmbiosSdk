@@ -94,8 +94,9 @@ NAMES: Dict[str, EnvName] = {
                 "matrix value", "DSL parameter"),
         EnvName("CI_INSTALL_SHA256",
                 "the build job's install-tree digest of this packaging leg, which the package "
-                "stage requires its unpacked hand-off to equal (milestone 0012 Story 03.0; "
-                "threat model CR-8)",
+                "stage requires its unpacked hand-off to equal, and the verify stage the "
+                "manifest's install_sha256 of the leg (milestone 0012 Story 03.0, Story 04.0 "
+                "Task 04; threat model CR-8, RP-4)",
                 "matrix.install_sha256 (ci.yml passes needs.build.outputs."
                 "install_sha256_<leg> into stage-package.yml's matrix)",
                 "the build configuration's install digest parameter, via a snapshot dependency"),
@@ -124,12 +125,19 @@ NAMES: Dict[str, EnvName] = {
                 "stage workflow's input)",
                 "the manifest configuration's digest parameter, via a snapshot dependency"),
         EnvName("CI_VERIFIED_MANIFEST_SHA256",
-                "the manifest digest the same run's verify stage passed; publish refuses "
-                "unless it equals CI_MANIFEST_SHA256 (ADR 0005 D6; empty until 0012 Story "
-                "04.0 Task 04 defines verify, so publish fails closed)",
+                "the manifest digest every packaging leg of the same run's verify stage passed "
+                "(set only by its verify-gate job); publish refuses unless it equals "
+                "CI_MANIFEST_SHA256 (ADR 0005 D6; 0012 Story 04.0 Task 04)",
                 "matrix.verified_manifest_sha256 (needs.verify.outputs."
                 "verified_manifest_sha256 via the stage workflow's input)",
                 "the verify configuration's output parameter, via a snapshot dependency"),
+        EnvName("CI_VERIFY_RESULTS",
+                "the verify-gate job's input: single-line JSON object leg -> the verify job's "
+                "verified_<leg> output (empty string for a leg that set none); the gate "
+                "requires every packaging leg to equal CI_MANIFEST_SHA256 (0012 Story 04.0 "
+                "Task 04)",
+                "matrix.results (stage-verify.yml: needs.verify.outputs.verified_<leg>)",
+                "the verify configurations' output parameters, via snapshot dependencies"),
         EnvName("CI_BUILD_BINARY_CACHE",
                 "JSON object leg -> binary_cache from the build job's outputs; a release-tier "
                 "destination cross-checks the manifest against it (RP-4, constraint 6)",

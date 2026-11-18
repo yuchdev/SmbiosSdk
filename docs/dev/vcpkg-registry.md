@@ -152,6 +152,14 @@ green in every commit of a release.
 5. **Open the PR from that branch and merge it** (the one manual step). A
    human-opened PR runs normal CI, including the registry lint. Merge with a
    merge commit. That merge is the registry **baseline** consumers pin.
+   Add the release's `scripts/ci/release_ledger.json` row (printed by the
+   `post-publish` job) to the same PR ([ci.md](ci.md)).
+6. **Every night after that**, the `verify` stage's `registry-consumer` job
+   (milestone 0012 Story 04.0 Task 04) installs `smbios-c` from
+   `https://github.com/<owner>/<repo>` at the current `master` commit, with no
+   overlay flag and no binary cache, on Linux, macOS and Windows. It checks the
+   consumer, the export allowlist (`dumpbin` on Windows) and the installed-file
+   set, exactly as a consumer of the published registry would.
 
 **A port-only fix at the same version** (`"port-version"` +1) is not
 automated: no tag drives it. On a branch, edit the portfile and bump

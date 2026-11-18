@@ -93,9 +93,14 @@ class PlanCliTests(unittest.TestCase):
                                                       "windows-x64", "macos-arm64"])
         self.assertEqual(json.loads(found["package"]), ["linux-x64", "windows-x64",
                                                         "macos-arm64"])
-        self.assertEqual(json.loads(found["publish"]), [])
+        # A pre-release tag (Story 04.0 Task 04 defined verify): the GitHub Release
+        # rows only, never the registry rows (constraint 8).
+        self.assertEqual(json.loads(found["verify"]), ["linux-x64", "windows-x64",
+                                                       "macos-arm64"])
+        self.assertEqual([r["job"] for r in json.loads(found["publish"])],
+                         ["release-draft", "release-promote"])
         whole = json.loads(found["plan"])
-        self.assertEqual(whole["stages"]["publish"], plan.NOT_RUN_UNDEFINED)
+        self.assertEqual(whole["stages"]["publish"], plan.RUN)
         self.assertNotIn("secret", found["plan"])
 
     def test_SameRepoPrSkipsThePushTierLegs(self) -> None:
@@ -231,16 +236,31 @@ class PublishGatingTests(unittest.TestCase):
         base = plan.load_data()
         return plan.PlanData(base.legs, base.pins, base.publish_jobs, frozenset(defined))
 
-    def test_RealDataHasNoPublishRowsWhileVerifyIsUndefined(self) -> None:
-        """Fail closed: publish is defined (stage.STEPS) but verify (Task 04) is not."""
-        base = plan.load_data()
-        self.assertIn("publish", base.defined_stages)
-        self.assertNotIn("verify", base.defined_stages)
+    def test_WithoutVerifyThereAreNoPublishRows(self) -> None:
+        """Fail closed: publish defined but verify not gives no publish row (ADR 0005 D6)."""
+        data = self.data({"package", "publish"})
         for ref in ("refs/tags/v1.0.1", "refs/tags/v1.0.1-rc.1"):
             with self.subTest(ref=ref):
-                result = plan.matrix_for("tag", ref, "full")
+                result = plan.matrix_for("tag", ref, "full", data=data)
                 self.assertEqual(result["publish"], [])
                 self.assertEqual(result["stages"]["publish"], plan.NOT_RUN_UNDEFINED)
+
+    def test_RealDataSchedulesVerifyAndATagGetsPublishRows(self) -> None:
+        """0012 Story 04.0 Task 04: verify is defined, so the real plan unblocks publish."""
+        base = plan.load_data()
+        self.assertTrue({"package", "verify", "publish"} <= base.defined_stages)
+        result = plan.matrix_for("tag", "refs/tags/v1.0.1", "full")
+        self.assertEqual(result["stages"]["verify"], plan.RUN)
+        self.assertEqual(sorted(result["verify"]), ["linux-x64", "macos-arm64", "windows-x64"])
+        self.assertEqual(result["stages"]["publish"], plan.RUN)
+        self.assertEqual([r["job"] for r in result["publish"]],
+                         ["release-draft", "release-promote", "registry-prepare", "registry-pr"])
+        for event, ref in (("pr", "refs/pull/3/merge"), ("schedule", "refs/heads/master"),
+                           ("push", "refs/heads/master")):
+            with self.subTest(event=event):
+                self.assertEqual(plan.matrix_for(event, ref, "full")["stages"]["verify"],
+                                 plan.RUN)
+        self.assertEqual(plan.matrix_for("push", "refs/heads/topic", "full")["verify"], [])
 
     def test_WithVerifyDefinedATagGetsTheReleaseRowsOnly(self) -> None:
         data = self.data({"package", "verify", "publish"})

@@ -22,9 +22,10 @@ model CR-6/CR-8: single-line JSON, random per-call delimiter):
     nothing on any other event; a pre-release tag ``v<X.Y.Z>-<pre>`` gets no
     ``registry-prepare``/``registry-pr`` rows (Story 04.0 Task 03, threat model
     constraint 8). ``publish`` (defined by Story 04.0 Task 02)
-    also counts as ``not run: stage not defined`` while ``verify`` is not
+    also counts as ``not run: stage not defined`` whenever ``verify`` is not
     defined: it may only run after the same run's verify (ADR 0005 D6), so
-    without verify it gets no row at all (fail closed).
+    without verify it gets no row at all (fail closed). ``verify`` is defined
+    since Story 04.0 Task 04 and lists the same packaging legs as ``package``.
 ``plan``
     The whole plan object (per-leg run/skip reasons, per-stage reasons, the
     runner label of every scheduled leg). The ``report`` job reads it back as
@@ -392,8 +393,9 @@ def matrix_for(event: str, ref: str, classification: str, *, pr_same_repo: bool 
             stages[name] = NOT_RUN_UNDEFINED
         elif name == "publish" and "verify" not in data.defined_stages:
             # ADR 0005 D6: publish runs only after the same run's verify passed.
-            # Until verify exists (0012 Story 04.0 Task 04) publish is not
-            # runnable either, so it never gets a row (fail closed).
+            # Without a defined verify stage publish is not runnable either, so
+            # it never gets a row (fail closed; verify exists since 0012 Story
+            # 04.0 Task 04).
             stages[name] = NOT_RUN_UNDEFINED
         else:
             stages[name] = RUN

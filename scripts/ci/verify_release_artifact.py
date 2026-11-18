@@ -7,7 +7,7 @@ against this repository's build or install tree:
 
 1. take the archive by path (offline), or resolve it from a ``dist/`` directory
    through its ``manifest.json`` (:func:`resolve_archive`); this module never
-   downloads - fetching is the caller's (the future ``verify`` stage's) job;
+   downloads - fetching is the caller's (the ``verify`` stage's) job;
 2. verify it against its ``.sha256`` sidecar **and** its ``manifest.json``
    entry (check 5 of the task, run *first*: nothing is extracted before its
    bytes are known to be the published ones);
@@ -25,7 +25,12 @@ against this repository's build or install tree:
    ``find_package(libsmbios CONFIG)`` resolved through ``CMAKE_PREFIX_PATH``
    to the extracted ``lib/cmake/libsmbios/``. The fixture has no whole-archive
    flag of its own (asserted here), so this re-proves ADR 0004 DD1 from a
-   release archive.
+   release archive;
+6. the export allowlist of the extracted ``smbios_c`` shared library
+   (:mod:`export_symbols`: ``nm`` for ``.so``/``.dylib``, ``dumpbin /exports``
+   for ``.dll``): every exported symbol is ``smbios_*`` (ADR 0004 Validation;
+   0012 Story 04.0 Task 04). It needs the archive's own OS on the host, not
+   its architecture.
 
 **The clean room is enforced, not assumed.** Children get an allowlisted
 environment (:func:`clean_environment`): ``VCPKG_*``, ``PKG_CONFIG_*``,
@@ -52,8 +57,8 @@ The compile/link/run checks need a host of the archive's own leg; with
 ``pkg-config`` resolution) run and the summary says ``not executed`` for the
 rest - never a pass.
 
-A library first: the future ``stage.py verify`` (milestone 0012 Story 04.0
-Task 02) calls :func:`run` in-process and reports through ``ci_step`` (policy
+A library first: ``stage.py verify`` (milestone 0012 Story 04.0 Task 04,
+step ``artifact``) calls :func:`run` in-process and reports through ``ci_step`` (policy
 P11: the single emitter), so :func:`run` prints nothing. :class:`VerifyError`
 carries a value-free reason: the failing check on the first line, then the
 cleaned tail of the tool's output. :func:`main` is a thin manual front end
@@ -86,6 +91,7 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple  # n
 import ci_step  # noqa: E402
 import consumer_smoke  # noqa: E402
 import env_names  # noqa: E402
+import export_symbols  # noqa: E402
 import package_archive as pa  # noqa: E402
 from reporters import child_environment  # noqa: E402
 
@@ -98,7 +104,8 @@ TAIL_LINES = 12
 #: Seconds each phase may take (a cold Windows configure is the slowest).
 PHASE_TIMEOUT_S: Dict[str, float] = {"pkg-config": 30, "compile c consumer": 120,
                                      "run c consumer": 60, "configure cxx consumer": 300,
-                                     "build cxx consumer": 300, "run cxx consumer": 60}
+                                     "build cxx consumer": 300, "run cxx consumer": 60,
+                                     "symbols": 60, "vswhere": 30}
 #: Parent-environment variables whose values name a tree the clean room must not touch.
 VCPKG_ROOT_NAMES: Tuple[str, ...] = ("VCPKG_ROOT", "VCPKG_INSTALLATION_ROOT")
 
@@ -776,7 +783,27 @@ def cxx_smoke(prefix: Path, work: Path, env: Mapping[str, str],
 # Entry point
 # ---------------------------------------------------------------------------
 
+def check_exports(prefix: Path, leg_os: str, env: Mapping[str, str]) -> str:
+    """Check 6: the extracted ``smbios_c`` library exports only ``smbios_*``; return the summary.
+
+    Raises:
+        VerifyError: The library is missing, no symbol tool is found, it exports
+            nothing, or a symbol outside the allowlist.
+    """
+    def run_tool(phase: str, argv: Sequence[str]) -> str:
+        return _run(phase, argv, env)
+
+    try:
+        library = export_symbols.shared_library(prefix, leg_os)
+        names = export_symbols.exported_symbols(library, run_tool, env, vswhere_run=run_tool)
+        export_symbols.check_symbols(names)
+    except export_symbols.ExportError as exc:
+        raise VerifyError(str(exc)) from None
+    return f"exports ok ({len(names)} smbios_* symbols)"
+
+
 def run(archive: Path, work_dir: Path, *, manifest: Optional[Path] = None, build: bool = True,
+        exports: bool = True,
         dependency_prefixes: Sequence[Path] = (), require_relocatable_pc: bool = False,
         repo_root: Path = REPO_ROOT, environ: Optional[Mapping[str, str]] = None,
         c_fixture: Path = C_FIXTURE, cxx_fixture: Path = CXX_FIXTURE) -> List[str]:
@@ -790,6 +817,9 @@ def run(archive: Path, work_dir: Path, *, manifest: Optional[Path] = None, build
         build: Run the compile/link/run checks (3 and 4). They need a host of the
             archive's own leg; ``False`` runs only checks 1, 2, 5, the layout and
             the ``pkg-config`` resolution, and reports the rest ``not executed``.
+        exports: Run check 6 (the export allowlist). It runs when ``build`` is
+            set, or when the host has the archive's OS (its symbol tool reads
+            any architecture); otherwise it is reported ``NOT EXECUTED``.
         dependency_prefixes: Where the consumer's own Boost (``find_dependency(Boost
             COMPONENTS iostreams)`` in ``libsmbiosConfig.cmake``) is installed, if
             not in CMake's default search path. Must lie outside the forbidden trees.
@@ -836,6 +866,13 @@ def run(archive: Path, work_dir: Path, *, manifest: Optional[Path] = None, build
         incs, libdirs, libs, mode = resolve_pkg_config(prefix, env, roots, require_relocatable_pc)
         lines.append("pkg-config ok" if mode == "relocatable" else
                      "pkg-config needs --define-prefix (non-relocatable .pc)")
+
+    leg_os = pa.leg_os(leg)
+    if exports and (build or export_symbols.host_os() == leg_os):
+        lines.append(check_exports(prefix, leg_os, env))
+    else:
+        lines.append(f"exports NOT EXECUTED (a {leg_os} symbol tool is needed; host "
+                     f"{here or 'unknown'})")
 
     if not build:
         lines.append(f"build/run NOT EXECUTED on {here or 'unknown'}")

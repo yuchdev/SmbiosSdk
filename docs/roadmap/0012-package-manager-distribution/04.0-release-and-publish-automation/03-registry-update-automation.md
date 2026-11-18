@@ -285,6 +285,11 @@ request.
   already build Boost cold within the 18-minute build budget. Story 02.0's single cold run took
   34 minutes on a developer Mac. If the first tag runs exceed 30, that is a C11 decision for
   the maintainer, not a silent raise.
+  **Superseded 2026-11-18 by a maintainer ruling** (applied in Task 04): a step dominated by a
+  cold dependency build gets **45 minutes**, citing that measured 34-minute cold run. The
+  `prepare` step is now 45 and the job 52 (3 + 2 + 45 + 2), recorded as `ruling_minutes` with
+  its reason in `step_budgets.json`. This exceeds inventory C11's 30-minute job ceiling, by
+  ruling.
 - The installed-file allowlist on Linux (`.so`) and Windows (`.dll`): the list is taken from
   the arm64-osx packages only.
 - Whether vcpkg fetches a `file://` registry from the shared clone (it did from a plain

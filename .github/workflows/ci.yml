@@ -143,19 +143,23 @@ jobs:
     with:
       legs: ${{ format('[{{"leg":"linux-x64","install_sha256":{0},"artifact_id":"{1}","binary_cache":{6}}},{{"leg":"windows-x64","install_sha256":{2},"artifact_id":"{3}","binary_cache":{7}}},{{"leg":"macos-arm64","install_sha256":{4},"artifact_id":"{5}","binary_cache":{8}}}]', needs.build.outputs.install_sha256_linux_x64, needs.build.outputs.install_artifact_linux_x64, needs.build.outputs.install_sha256_windows_x64, needs.build.outputs.install_artifact_windows_x64, needs.build.outputs.install_sha256_macos_arm64, needs.build.outputs.install_artifact_macos_arm64, needs.build.outputs.binary_cache_linux_x64, needs.build.outputs.binary_cache_windows_x64, needs.build.outputs.binary_cache_macos_arm64) }}
 
-  # Milestone 0012 Story 04.0 (ADR 0005 D1/D6/D7): the verify stage. Its
-  # logic is Task 04; until then `stage.py verify` exits 2 and the plan's
-  # `verify` list is always [] (stage not defined), so this job is skipped.
-  # It downloads `dist` by artifact ID and is given the package stage's
-  # out-of-band manifest digest (threat model 2026-11-18 RP-4, constraint 4).
-  # Task 04 completes it, including the `verified_manifest_sha256` output
-  # the publish stage requires.
+  # Milestone 0012 Story 04.0 Task 04 (ADR 0005 D1/D6/D7): the verify stage,
+  # scheduled by the plan wherever package is (PRs to master, master pushes,
+  # nightly, v* tags). Each packaging leg verifies its own archive on a runner
+  # of its own OS/arch: `dist` by artifact ID, sha256(manifest.json) against
+  # the package stage's out-of-band manifest_sha256 before parsing, every file
+  # against the manifest, install_sha256 against the build job's own output
+  # (threat model 2026-11-18 RP-4, constraint 4), then the clean-room consumer
+  # and export checks. Its only output, verified_manifest_sha256, is set by
+  # stage-verify.yml's verify-gate job, which runs only if every leg succeeded
+  # and itself requires all packaging legs to report the anchored digest.
+  # The legs list is built here (like package's), one object per packaging leg.
   verify:
-    needs: [plan, package]
+    needs: [plan, build, package]
     if: needs.plan.outputs.verify != '[]'
     uses: ./.github/workflows/stage-verify.yml
     with:
-      legs: ${{ needs.plan.outputs.verify }}
+      legs: ${{ format('[{{"leg":"linux-x64","install_sha256":{0},"manifest_sha256":{3}}},{{"leg":"windows-x64","install_sha256":{1},"manifest_sha256":{3}}},{{"leg":"macos-arm64","install_sha256":{2},"manifest_sha256":{3}}}]', needs.build.outputs.install_sha256_linux_x64, needs.build.outputs.install_sha256_windows_x64, needs.build.outputs.install_sha256_macos_arm64, needs.package.outputs.manifest_sha256) }}
       manifest_sha256: ${{ fromJSON(needs.package.outputs.manifest_sha256) }}
       dist_artifact_id: ${{ needs.package.outputs.dist_artifact_id }}
 
@@ -165,12 +169,15 @@ jobs:
   # registry-pr, which creates registry/v<version>; a human opens the PR).
   # Reached only from a v* tag push (P12 tier clause), only after the same
   # run's verify passed (needs: verify, and the implicit success() of a job
-  # that names no status function), and only when the plan has publish rows -
-  # which it never has while verify is not defined (plan.py; fail closed).
-  # Inputs are job outputs, never files inside an artifact (RP-4): the
-  # manifest digest and dist artifact ID from the package stage, each leg's
-  # binary_cache from the build job (cold-build cross-check, CR-2), and the
-  # manifest digest verify passed (empty until Task 04: publish refuses).
+  # that names no status function), and only when the plan has publish rows
+  # (plan.py; never while verify is undefined). Inputs are job outputs, never
+  # files inside an artifact (RP-4): the manifest digest and dist artifact ID
+  # from the package stage, each leg's binary_cache from the build job
+  # (cold-build cross-check, CR-2), and the manifest digest every verify leg
+  # passed (stage-verify.yml's verify-gate; empty unless all legs verified,
+  # and publish refuses an empty or different value). After release-promote,
+  # stage-publish.yml's post-publish job re-checks the public release
+  # anonymously (Task 04, constraint 11).
   publish-release:
     needs: [plan, build, package, verify]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.plan.outputs.publish != '[]'
@@ -182,7 +189,7 @@ jobs:
       manifest_sha256: ${{ fromJSON(needs.package.outputs.manifest_sha256) }}
       dist_artifact_id: ${{ needs.package.outputs.dist_artifact_id }}
       binary_cache: ${{ format('{{"linux-x64":{0},"windows-x64":{1},"macos-arm64":{2}}}', needs.build.outputs.binary_cache_linux_x64, needs.build.outputs.binary_cache_windows_x64, needs.build.outputs.binary_cache_macos_arm64) }}
-      verified_manifest_sha256: ${{ needs.verify.outputs.verified_manifest_sha256 }}
+      verified_manifest_sha256: ${{ needs.verify.outputs.verified_manifest_sha256 && fromJSON(needs.verify.outputs.verified_manifest_sha256) || '' }}
       # Story 04.0 Task 03: the registry jobs run only when the plan has their
       # rows, i.e. on a final v<X.Y.Z> tag, never a pre-release (constraint 8).
       registry: ${{ contains(needs.plan.outputs.publish, '"registry-pr"') }}

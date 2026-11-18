@@ -13,7 +13,13 @@ installed (:func:`check_installed_files`, 0012 Story 04.0 Task 03: the portfile
 prunes a fixed list, so a new root ``install()`` rule would otherwise ship
 silently). No ``--overlay-ports``: the package is found only through the
 registry. Used by the publish stage's ``registry-prepare`` job
-(``registry_prepare.py``) before any registry write.
+(``registry_prepare.py``) before any registry write, against this checkout
+(``file://`` registry at ``HEAD``), and by the nightly ``verify`` step
+``stage.py verify --only registry`` (0012 Story 04.0 Task 04) against the
+**published** registry: ``registry_url`` is the public repository and
+``baseline`` the ``master`` commit a consumer would pin. The export check
+(:mod:`export_symbols`) covers ``.so``, ``.dylib`` and, since Task 04, ``.dll``
+(``dumpbin /exports``).
 
 A library, not a command: it prints nothing (policy P11); a caller reports the
 returned lines or the :class:`consumer_smoke.SmokeError`. Standard library only.
@@ -22,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -33,6 +40,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import consumer_smoke  # noqa: E402
+import export_symbols  # noqa: E402
 from consumer_smoke import SmokeError  # noqa: E402,F401
 
 REPO_ROOT = Path(_HERE).resolve().parents[1]
@@ -41,7 +49,12 @@ PORT = "smbios-c"
 #: A vcpkg port install builds Boost on a cold cache; the bound is generous.
 consumer_smoke.PHASE_TIMEOUT_S.update({"git head": 30, "configure vcpkg consumer": 3600,
                                        "build vcpkg consumer": 300, "run vcpkg consumer": 60,
-                                       "symbols": 60})
+                                       "symbols": 60, "vswhere": 30})
+#: The only registry URLs a consumer check may name: this repository on GitHub
+#: (the published registry) or a ``file://`` checkout (registry-prepare).
+_PUBLIC_REGISTRY = re.compile(r"^https://github\.com/[A-Za-z0-9][A-Za-z0-9-]{0,38}/"
+                              r"[A-Za-z0-9._-]{1,100}$")
+_SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
 def head_commit(repo_root: Path) -> str:
@@ -53,12 +66,26 @@ def head_commit(repo_root: Path) -> str:
     return sha
 
 
-def write_consumer_files(consumer: Path, repo_root: Path, baseline: str) -> None:
-    """``vcpkg.json`` + ``vcpkg-configuration.json``: this repository is the registry."""
+def write_consumer_files(consumer: Path, repo_root: Path, baseline: str,
+                         registry_url: Optional[str] = None) -> None:
+    """``vcpkg.json`` + ``vcpkg-configuration.json``: this repository is the registry.
+
+    ``registry_url`` (default: ``repo_root`` as a ``file://`` URI) must be the
+    public ``https://github.com/<owner>/<name>`` form when given.
+
+    Raises:
+        SmokeError: ``registry_url`` or ``baseline`` is malformed (never echoed).
+    """
+    if registry_url is not None and not _PUBLIC_REGISTRY.fullmatch(registry_url):
+        raise SmokeError("registry: expected https://github.com/<owner>/<name> -> actual "
+                         "<rejected>")
+    if not _SHA.fullmatch(baseline):
+        raise SmokeError("registry baseline: expected a 40-hex commit -> actual <rejected>")
     root_cfg = json.loads((repo_root / "vcpkg-configuration.json").read_text(encoding="utf-8"))
     config = {
         "default-registry": root_cfg["default-registry"],
-        "registries": [{"kind": "git", "repository": repo_root.resolve().as_uri(),
+        "registries": [{"kind": "git",
+                        "repository": registry_url or repo_root.resolve().as_uri(),
                         "baseline": baseline, "packages": [PORT]}],
     }
     manifest = {"name": "smbios-c-vcpkg-consumer", "version": "0.0.0", "dependencies": [PORT]}
@@ -67,24 +94,25 @@ def write_consumer_files(consumer: Path, repo_root: Path, baseline: str) -> None
     (consumer / "vcpkg.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
-def exported_symbols(library: Path) -> Optional[List[str]]:
-    """Defined, externally visible symbols of ``library``; ``None`` where ``nm`` is unusable."""
-    if library.suffix not in (".so", ".dylib"):
-        return None
-    flags = ["-gU"] if library.suffix == ".dylib" else ["-D", "--defined-only"]
-    out = consumer_smoke._run("symbols", ["nm", *flags, str(library)])
-    names = [line.split()[-1] for line in out.splitlines() if line.strip()]
-    return [n.lstrip("_") if library.suffix == ".dylib" else n for n in names]
+def exported_symbols(library: Path) -> List[str]:
+    """Defined, externally visible symbols of ``library`` (``nm``, or ``dumpbin`` for a ``.dll``).
+
+    Raises:
+        SmokeError: No symbol tool for the library (one value-free line).
+    """
+    try:
+        return export_symbols.exported_symbols(library, consumer_smoke._run, os.environ,
+                                               vswhere_run=consumer_smoke._run)
+    except export_symbols.ExportError as exc:
+        raise SmokeError(str(exc)) from None
 
 
 def check_symbols(symbols: Sequence[str]) -> None:
     """Every exported symbol is a ``smbios_*`` C function (and at least one exists)."""
-    # A GNU ld version script can list its version node (SMBIOS_C_<ver>) as a defined symbol.
-    stray = [s for s in symbols if not s.startswith(("smbios_", "SMBIOS_C_"))]
-    if not symbols:
-        raise SmokeError("symbols: the library exports nothing")
-    if stray:
-        raise SmokeError(f"symbols: {len(stray)} exported symbol(s) outside smbios_*")
+    try:
+        export_symbols.check_symbols(symbols)
+    except export_symbols.ExportError as exc:
+        raise SmokeError(str(exc)) from None
 
 
 #: Files every ``smbios-c`` package installs under ``vcpkg_installed/<triplet>/``.
@@ -99,7 +127,8 @@ INSTALLED_COMMON: Tuple[str, ...] = (
 )
 #: The library files, by the shared-library suffix found. ``.so`` follows the
 #: same rule (no SOVERSION in smbios_c/CMakeLists.txt); ``.so`` and ``.dll`` are
-#: unverified until a Linux/Windows registry run (0012 Story 04.0 Task 04).
+#: unverified until the first CI run of the nightly ``verify --only registry``
+#: job on Linux and Windows (0012 Story 04.0 Task 04 wires it; it has not run yet).
 INSTALLED_LIBRARIES: Dict[str, Tuple[str, ...]] = {
     ".dylib": ("lib/libsmbios_c.dylib", "debug/lib/libsmbios_c.dylib"),
     ".so": ("lib/libsmbios_c.so", "debug/lib/libsmbios_c.so"),
@@ -181,8 +210,15 @@ def find_library(installed: Path) -> Path:
 
 
 def run(work_dir: Path, *, vcpkg_root: Path, repo_root: Path = REPO_ROOT,
-        fixture: Path = FIXTURE, triplet: Optional[str] = None) -> List[str]:
-    """Resolve ``smbios-c`` through the registry, build and run the consumer, check symbols."""
+        fixture: Path = FIXTURE, triplet: Optional[str] = None,
+        registry_url: Optional[str] = None, baseline: Optional[str] = None) -> List[str]:
+    """Resolve ``smbios-c`` through the registry, build and run the consumer, check symbols.
+
+    Args:
+        registry_url: The published registry (``https://github.com/<owner>/<name>``);
+            default this checkout as a ``file://`` registry.
+        baseline: The registry commit to pin; default ``repo_root``'s ``HEAD``.
+    """
     if not fixture.is_dir():
         raise SmokeError("vcpkg consumer fixture missing")
     toolchain = vcpkg_root / "scripts" / "buildsystems" / "vcpkg.cmake"
@@ -197,7 +233,7 @@ def run(work_dir: Path, *, vcpkg_root: Path, repo_root: Path = REPO_ROOT,
             shutil.rmtree(path)
     work_dir.mkdir(parents=True, exist_ok=True)
     shutil.copytree(fixture, consumer)
-    write_consumer_files(consumer, repo_root, head_commit(repo_root))
+    write_consumer_files(consumer, repo_root, baseline or head_commit(repo_root), registry_url)
 
     configure = ["cmake", "-S", str(consumer), "-B", str(build),
                  f"-DCMAKE_TOOLCHAIN_FILE={toolchain}"]
@@ -212,11 +248,8 @@ def run(work_dir: Path, *, vcpkg_root: Path, repo_root: Path = REPO_ROOT,
 
     library = find_library(build / "vcpkg_installed")
     symbols = exported_symbols(library)
-    if symbols is None:
-        lines.append("symbols=skipped")
-    else:
-        check_symbols(symbols)
-        lines.append(f"symbols={len(symbols)}")
+    check_symbols(symbols)
+    lines.append(f"symbols={len(symbols)}")
     lines.append(f"installed={check_installed_files(build / 'vcpkg_installed', library)}")
     return lines
 

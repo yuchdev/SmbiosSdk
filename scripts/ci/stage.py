@@ -13,7 +13,7 @@ Every sub-step goes through the ``ci_step`` library (RC1-RC3), so a green
 sub-step prints exactly one ``ok:``/``info:``/``skip:`` line (plus the RC4
 header). Milestone 0014 Story 03.0 Task 01 implemented ``lint``, ``build`` and
 ``test``; milestone 0012 Story 03.0 Task 01 adds ``package``; Story 04.0 Task 02
-adds ``publish``. ``verify`` (Story 04.0 Task 04) exits 2 until it is defined.
+adds ``publish``; Story 04.0 Task 04 adds ``verify``.
 
 Stages and their steps (``--only`` selects one; without it every step runs in
 this order):
@@ -98,10 +98,29 @@ every read and write with no network and without reading the credential. A
 real run refuses a disabled destination, a local run, an event outside the
 tier, an unanchored or invalid manifest (``CI_MANIFEST_SHA256``), a leg that
 is not cold-built (``CI_BUILD_BINARY_CACHE``), and a missing verify result
-(``CI_VERIFIED_MANIFEST_SHA256``; verify is Task 04, so today it always
-refuses). ``CI_PUBLISH_TOKEN`` leaves ``os.environ`` before anything else runs
-and no child process is started. Rules: ``publish_inputs.py`` and
-``publish_github_release.py``.
+(``CI_VERIFIED_MANIFEST_SHA256``, set only by the verify stage's
+``verify-gate`` job). ``CI_PUBLISH_TOKEN`` leaves ``os.environ`` before anything
+else runs and no child process is started. ``post-publish`` (``github-release``,
+Task 04) is unprivileged like ``prepare``: refused if a credential is set,
+anonymous requests only (``post_publish_check.py``). Rules:
+``publish_inputs.py`` and ``publish_github_release.py``.
+``verify`` (milestone 0012 Story 04.0 Task 04; ADR 0005 D1/D4/D6/D7; packaging
+legs, each on a runner of its own OS/arch; stops at the first failing step):
+    ``deps`` - pinned tools (``pkgconf`` too on Windows), RC4 header, pinned
+    vcpkg and ``boost-iostreams`` built cold into ``$CI_TEMP_DIR/verify-deps``
+    (``verify_deps.py``; the Boost a release consumer brings); a local run
+    skips it and uses the host's tools. ``artifact`` - ``dist/manifest.json``
+    against ``CI_MANIFEST_SHA256`` before parsing, every ``dist/`` file against
+    the manifest, the leg's ``install_sha256`` against ``CI_INSTALL_SHA256``,
+    then ``verify_release_artifact.run(build=True)`` (clean-room
+    ``pkg-config`` + C consumer, ``find_package`` consumer, export allowlist);
+    sets ``verified_<leg>`` last. Only with ``--only``: ``gate`` (the
+    ``verify-gate`` job: every packaging leg's ``verified_<leg>`` from
+    ``CI_VERIFY_RESULTS`` must equal ``CI_MANIFEST_SHA256``, then
+    ``verified_manifest_sha256`` is set), and the nightly ``registry`` (the
+    vcpkg consumer test against the published registry, no overlay) and
+    ``releases`` (anonymous re-check of the last 5 releases against
+    ``release_ledger.json``).
 
 Sanitizer legs (Story 03.0 Task 02; legs with ``"job": "sanitizers"``,
 inventory C12-C14): ``build`` configures into ``build/<preset>-asan`` with
@@ -190,6 +209,8 @@ REPO_ROOT: Final = Path(_HERE).resolve().parents[1]
 LEGS_FILE: Final = Path(_HERE) / "legs.json"
 PINS_FILE: Final = Path(_HERE) / "pins.json"
 REQUIREMENTS_FILE: Final = Path(_HERE) / "requirements-tools.txt"
+#: Hash-pinned ``pkgconf`` for the Windows verify leg (the image has no pkg-config).
+VERIFY_REQUIREMENTS_FILE: Final = Path(_HERE) / "requirements-verify.txt"
 
 #: Every stage name of SC1, in pipeline order.
 STAGES: Final = ("lint", "build", "test", "package", "verify", "publish")
@@ -202,7 +223,11 @@ STEPS: Final[Dict[str, Tuple[str, ...]]] = {
     "package": ("env", "unpack", "archive", "manifest"),
     # 0012 Story 04.0 Tasks 02-03: one phase per publish job (run_publish; not
     # leg-based). Each destination module lists its own PHASES; preflight is common.
-    "publish": ("preflight", "draft", "promote", "prepare", "branch"),
+    "publish": ("preflight", "draft", "promote", "post-publish", "prepare", "branch"),
+    # 0012 Story 04.0 Task 04: ``deps`` and ``artifact`` are the
+    # per-leg verify job; ``gate`` the verify-gate job; ``registry`` and
+    # ``releases`` the nightly jobs. Only deps/artifact run without --only.
+    "verify": ("deps", "artifact", "gate", "registry", "releases"),
 }
 #: Run order of each (stage, job); a stage absent here runs all of ``STEPS``.
 JOB_STEPS: Final[Dict[Tuple[str, str], Tuple[str, ...]]] = {
@@ -212,7 +237,10 @@ JOB_STEPS: Final[Dict[Tuple[str, str], Tuple[str, ...]]] = {
     ("test", "build"): ("unit", "cli-formats", "live-table", "consumer"),
     ("test", "sanitizers"): ("unit", "cli-formats", "live-table"),
     ("test", "gui"): ("gui-binary", "gui-hooks", "gui-ci", "gui-local"),
+    ("verify", "build"): ("deps", "artifact"),
 }
+#: Steps a stage runs only when ``--only`` names them (never in its default list).
+ONLY_STEPS: Final[Dict[str, Tuple[str, ...]]] = {"verify": ("gate", "registry", "releases")}
 #: Neutral ``CI_EVENT`` values (ADR 0005); empty means a local run.
 EVENTS: Final = ("push", "pr", "schedule", "manual", "tag")
 #: The only branch whose pushes run the full matrix (plan Q1).
@@ -665,11 +693,13 @@ def cold_build(ctx: Context) -> bool:
     return ctx.event == "tag" and ctx.leg.packaging
 
 
-def _tools(ctx: Context) -> Tuple[int, Optional[Tuple[str, float]]]:
+def _tools(ctx: Context, extra: Sequence[Path] = ()) -> Tuple[int, Optional[Tuple[str, float]]]:
     """Install the pinned tools into the job-local venv; return ``(exit, deferred ok line)``.
 
     The ``ok:`` line is printed later, after the RC4 header (which then shows
-    the pinned versions). A local run uses the host tools and skips.
+    the pinned versions). A local run uses the host tools and skips. ``extra``
+    names further hash-pinned requirement files (the Windows verify leg's
+    ``pkgconf``, :data:`VERIFY_REQUIREMENTS_FILE`).
     """
     if ctx.local:
         return 0, None
@@ -689,8 +719,17 @@ def _tools(ctx: Context) -> Tuple[int, Optional[Tuple[str, float]]]:
                  patterns=["python"], timeout_s=PIP_TIMEOUT_S, reporter=quiet)
     if rc != 0:
         return rc, None
+    for req in extra:
+        rc = ctx.run("pinned tools", [str(venv_py), "-I", "-m", "pip", "install", "--quiet",
+                                      "--disable-pip-version-check", "--require-hashes",
+                                      "--no-deps", "--only-binary", ":all:", "-r", str(req)],
+                     patterns=["python"], timeout_s=PIP_TIMEOUT_S, reporter=quiet)
+        if rc != 0:
+            return rc, None
     activate_tools(ctx.temp_dir)
-    return 0, ("cmake, ninja from requirements-tools.txt", round(time.monotonic() - start, 1))
+    names = "".join(f", {req.name}" for req in extra)
+    return 0, (f"cmake, ninja from requirements-tools.txt{names}",
+               round(time.monotonic() - start, 1))
 
 
 def _set_cache_output(ctx: Context, key: Optional[Tuple[str, str]]) -> None:
@@ -1423,6 +1462,404 @@ def step_archive(ctx: Context) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# verify (milestone 0012 Story 04.0 Task 04; ADR 0005 D1/D4/D6/D7)
+# ---------------------------------------------------------------------------
+
+#: How many published releases the nightly re-check covers (threat model constraint 11).
+RECHECK_COUNT: Final = 5
+#: Time limit of the dependency-prefix ``vcpkg install`` (the workflow step budget is the outer bound).
+DEPS_TIMEOUT_S: Final = 20 * 60.0
+#: Time limit of the nightly registry consumer check (its workflow step budget is the outer bound).
+REGISTRY_TIMEOUT_S: Final = 55 * 60.0
+
+
+def verified_output_name(leg: str) -> str:
+    """The per-leg verify-job output carrying the manifest digest it verified (``verified_linux_x64``).
+
+    One uniquely named output per leg, so the matrix job's combined outputs keep
+    every leg's value (the same pattern as ``install_sha256_<leg>``).
+    """
+    return "verified_" + leg.replace("-", "_")
+
+
+def _record_ok(ctx: Context, label: str, summary: str, start: float) -> int:
+    elapsed = round(time.monotonic() - start, 1)
+    ctx.emit(ctx.reporter.step_ok(label, summary, elapsed))
+    ci_step.append_record(ci_step.StepResult(label, "hard", "ok", 0, elapsed, summary, None,
+                                             None), ctx.results)
+    return 0
+
+
+def _packaging_legs() -> List[str]:
+    return [str(x) for x in load_legs().get("stages", {}).get("package", [])]  # type: ignore[union-attr]
+
+
+def _verify_anchor(ctx: Context, dist: Path) -> str:
+    """``CI_MANIFEST_SHA256`` (required on CI); a local run without it anchors to the file itself.
+
+    Raises:
+        UsageError: Missing on CI.
+    """
+    import publish_inputs as pin
+    anchor = env_names.get("CI_MANIFEST_SHA256")
+    if anchor:
+        return anchor
+    if not ctx.local:
+        raise UsageError("CI_MANIFEST_SHA256 is required on CI (the package stage's "
+                         "manifest_sha256 output, threat model RP-4)")
+    try:
+        raw = pin._read_regular(dist / "manifest.json", pin.MANIFEST_MAX_BYTES, "manifest.json")
+    except pin.PublishInputError:
+        return ""
+    ctx.emit(ctx.reporter.info("info: local run: CI_MANIFEST_SHA256 unset, dist/manifest.json "
+                               "not anchored out of band (CI requires it)"))
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _bootstrap_vcpkg(ctx: Context) -> Path:
+    """Bootstrap the pinned vcpkg (cold: ``VCPKG_BINARY_SOURCES=clear``); return its tool.
+
+    Raises:
+        ReportedUsageError: never; a failed bootstrap prints its own RC1 line
+            and this returns a non-existent path the caller turns into exit 1.
+    """
+    import bootstrap_vcpkg
+    rc = bootstrap_vcpkg.main(["--reporter", ctx.reporter.name, "--repo-root", str(ctx.workspace),
+                               "--packaging-leg"])
+    if rc != 0:
+        return Path()
+    # P15 / CR-2: verify restores no cache and builds its dependencies cold on every event.
+    os.environ["VCPKG_BINARY_SOURCES"] = "clear"
+    root = Path(os.environ.get("VCPKG_ROOT", ""))
+    return root / ("vcpkg.exe" if os.name == "nt" else "vcpkg")
+
+
+def step_deps(ctx: Context) -> int:
+    """Pinned tools, RC4 header, and the Boost a release consumer brings (CI only).
+
+    ``verify_deps``: the pinned vcpkg installs only ``boost-iostreams`` for the
+    leg's triplet into ``$CI_TEMP_DIR/verify-deps/installed`` (outside the
+    checkout and the vcpkg root), cold. A local run uses the host's compiler,
+    ``pkg-config`` and Boost, and says so in one ``skip:`` line.
+    """
+    import verify_deps
+    start = time.monotonic()
+    label = f"verify deps {ctx.leg.name}"
+    if ctx.local:
+        step_env(ctx)
+        return ctx.skip(label, "local run uses the host's compiler, pkg-config and Boost")
+    extra = (VERIFY_REQUIREMENTS_FILE,) if ctx.leg.runner == "windows" else ()
+    rc, tools_ok = _tools(ctx, extra)
+    if rc != 0:
+        return rc
+    step_env(ctx)
+    if tools_ok is not None:
+        ctx.emit(ctx.reporter.step_ok("pinned tools", *tools_ok))
+    tool = _bootstrap_vcpkg(ctx)
+    if not tool.is_file():
+        return ctx.fail(label, "vcpkg bootstrap: expected ok -> actual failed", start)
+    try:
+        verify_deps.write_manifest(ctx.temp_dir, ctx.workspace)
+        verify_deps.write_release_triplet(ctx.temp_dir, tool.parent, ctx.leg.name)
+        argv = verify_deps.install_argv(tool, ctx.temp_dir, ctx.leg.name)
+        prefix = verify_deps.installed_prefix(ctx.temp_dir, ctx.leg.name)
+    except verify_deps.DepsError as exc:
+        return ctx.fail(label, str(exc), start)
+    rc = ctx.run("boost dependency prefix", argv, patterns=["error:", "CMake Error"],
+                 timeout_s=DEPS_TIMEOUT_S, reporter=_QuietOk(ctx.reporter))
+    if rc != 0:
+        return rc
+    if not prefix.is_dir() or prefix.is_symlink():
+        return ctx.fail(label, f"dependency prefix: expected {_show(prefix.name)} -> actual "
+                               "missing after vcpkg install", start)
+    return _record_ok(ctx, label, f"boost-iostreams for {prefix.name} (release only) into "
+                                  f"$CI_TEMP_DIR/{verify_deps.ROOT_NAME} (pinned baseline, "
+                                  "cold, VCPKG_BINARY_SOURCES=clear)", start)
+
+
+def step_artifact(ctx: Context) -> int:
+    """Verify this leg's release archive from ``dist/`` in a clean room (ADR 0005 D1/D4).
+
+    1. ``dist/manifest.json`` must match ``CI_MANIFEST_SHA256`` (the package
+       stage's out-of-band output) **before** it is parsed, then every archive
+       and ``.sha256`` of every leg must match it (``publish_inputs``,
+       constraint 4). A corrupted asset fails here, before anything is extracted.
+    2. The leg's ``install_sha256`` must equal ``CI_INSTALL_SHA256``, the build
+       job's own output (RP-4: the extracted tree is compared with the tested
+       tree, not only with the manifest).
+    3. ``verify_release_artifact.run`` with ``build=True``: extraction into an
+       empty directory, layout and tree digest, the literal ``pkg-config``
+       command (relocatable ``.pc`` required) and C consumer, the
+       ``find_package(libsmbios CONFIG)`` consumer (Boost from ``step_deps``'s
+       prefix), and the export allowlist (``nm``/``dumpbin``).
+
+    Only after all of it passes is the job output ``verified_<leg>`` set to
+    the manifest digest. On CI a runner of another leg is a failure; a local
+    run on another host runs the host-independent checks, says ``NOT
+    EXECUTED`` for the rest, and sets no output.
+    """
+    import msvc_env
+    import publish_inputs as pin
+    import verify_deps
+    import verify_release_artifact as vra
+    start = time.monotonic()
+    leg = ctx.leg.name
+    label = f"verify {leg}"
+    dist = ctx.artifact_dir / "dist"
+    anchor = _verify_anchor(ctx, dist)
+    if not dist.is_dir() or dist.is_symlink():
+        return _fail_input(ctx, label, f"dist missing: {dist} ($CI_ARTIFACT_DIR/dist/, "
+                                       "downloaded by artifact ID from the package stage)",
+                           start)
+    build_install = env_names.get("CI_INSTALL_SHA256")
+    if build_install and not _HEX64.fullmatch(build_install):
+        raise UsageError("CI_INSTALL_SHA256 must be 64 lower-case hex characters")
+    if not build_install and not ctx.local:
+        raise UsageError("CI_INSTALL_SHA256 is required on CI (the build job's install digest "
+                         "of this leg, threat model RP-4)")
+    try:
+        raw, data = pin.load_anchored_manifest(dist, anchor)
+        legs = _packaging_legs()
+        if ctx.local:
+            # A local package run writes only the host's leg; CI requires all of them.
+            present = [str(e.get("leg")) for e in data.get("legs", []) if isinstance(e, dict)] \
+                if isinstance(data, dict) and isinstance(data.get("legs"), list) else []
+            legs = [x for x in legs if x in present]
+            if len(legs) < len(_packaging_legs()):
+                ctx.emit(ctx.reporter.info(f"info: local run: manifest holds {len(legs)} of "
+                                           f"{len(_packaging_legs())} packaging legs (CI "
+                                           "requires every one)"))
+        if leg not in legs:
+            return ctx.fail(label, f"manifest.legs: expected an entry for {leg} -> actual none",
+                            start)
+        view = pin.validate_manifest(data, anchor, len(raw), legs)
+        assets = pin.local_assets(dist, view)
+    except pin.PublishInputError as exc:
+        return ctx.fail(label, str(exc), start)
+    entry = next(e for e in view.legs if e["leg"] == leg)
+    if build_install and entry["install_sha256"] != build_install:
+        return ctx.fail(label, f"install_sha256: expected {build_install[:16]} (build job "
+                               f"output) -> actual {str(entry['install_sha256'])[:16]} "
+                               "(manifest)", start)
+    host = vra.host_leg()
+    build = host == leg
+    if not build and not ctx.local:
+        return ctx.fail(label, f"runner: expected a {leg} host -> actual {host or 'unknown'} "
+                               "(legs.json runner vs workflow runs-on)", start)
+    environ: Dict[str, str] = dict(os.environ)
+    prefixes: List[Path] = []
+    try:
+        if not ctx.local:
+            prefix = verify_deps.installed_prefix(ctx.temp_dir, leg)
+            if not prefix.is_dir() or prefix.is_symlink():
+                return _fail_input(ctx, label, f"Boost dependency prefix missing: {prefix} "
+                                               "(stage.py verify --only deps runs first)", start)
+            prefixes.append(prefix)
+            if ctx.leg.runner == "windows":
+                environ = msvc_env.developer_environment()
+    except (verify_deps.DepsError, msvc_env.MsvcError) as exc:
+        return ctx.fail(label, str(exc), start)
+    work = ctx.temp_dir / f"verify-{leg}"
+    if work.is_symlink():
+        return ctx.fail(label, "scratch path is a symlink", start)
+    if work.exists():
+        shutil.rmtree(work)
+    try:
+        lines = vra.run(dist / str(entry["file"]), work, manifest=dist / "manifest.json",
+                        build=build, dependency_prefixes=prefixes, require_relocatable_pc=True,
+                        environ=environ)
+    except vra.VerifyError as exc:
+        first, *tail = str(exc).splitlines() or ["failed"]
+        return ctx.fail(label, first, start, tail)
+    anchored = "" if env_names.get("CI_MANIFEST_SHA256") else " (local, unanchored)"
+    summary = (f"{len(assets)} files = manifest {anchor[:12]}{anchored}; "
+               + "; ".join(_compact_verify_line(line) for line in lines[2:]))
+    if build:
+        # The gate input: set last, only after every check above passed.
+        ctx.reporter.set_output(verified_output_name(leg), anchor)
+        return _record_ok(ctx, label, summary, start)
+    ctx.emit(ctx.reporter.info(f"info: {leg} archive on a {host or 'unknown'} host: no verify "
+                               "result is set (a partial verify never counts)"))
+    return _record_ok(ctx, label, summary, start)
+
+
+def _compact_verify_line(line: str) -> str:
+    """One ``verify_release_artifact.run`` summary line, shortened for the 160-character ``ok:``.
+
+    ``vra.run``'s first two lines (``<leg> <version>``, ``sha256 ok``) are
+    folded into the caller's head; ``NOT EXECUTED`` and ``--define-prefix``
+    notes keep their key words so a partial run is never mistaken for a pass.
+    """
+    m = re.fullmatch(r"(\d+) files, install_sha256 ok", line)
+    if m:
+        return f"tree {m.group(1)} = install_sha256"
+    if line.startswith("c: smbios_open="):
+        return "c: " + line[len("c: smbios_open="):]
+    m = re.fullmatch(r"exports ok \((\d+) smbios_\* symbols\)", line)
+    if m:
+        return f"exports {m.group(1)} smbios_*"
+    if line.startswith("exports NOT EXECUTED"):
+        return "exports NOT EXECUTED"
+    if line.startswith("cxx: "):
+        return line.split(" ", 2)[0] + " " + line.split(" ")[1]
+    return line
+
+
+def verify_gate(anchor: str, results: Mapping[str, object], packaging_legs: Sequence[str]
+                ) -> str:
+    """The verify-gate rule: every packaging leg verified exactly the anchored manifest.
+
+    ``results`` maps leg -> that leg's ``verified_<leg>`` job output (an empty
+    string when the leg never set it). Only a complete, unanimous set yields
+    the anchor; a missing, empty, other or extra leg is refused.
+
+    Returns:
+        ``anchor``, the value to export as ``verified_manifest_sha256``.
+
+    Raises:
+        UsageError: The anchor is malformed.
+        ValueError: The first leg that did not verify this manifest (one RC1 line).
+    """
+    if not _HEX64.fullmatch(anchor or ""):
+        raise UsageError("CI_MANIFEST_SHA256 must be 64 lower-case hex characters")
+    extra = sorted(set(results) - set(packaging_legs))
+    if extra:
+        raise ValueError(f"verify gate: expected legs {','.join(packaging_legs)} -> actual "
+                         f"{len(extra)} unknown leg(s)")
+    for leg in packaging_legs:
+        value = results.get(leg)
+        if value != anchor:
+            shown = ("no result (leg skipped, cancelled or failed)" if not value
+                     else str(value)[:16] if _HEX64.fullmatch(str(value)) else "<rejected>")
+            raise ValueError(f"verify gate {leg}: expected verified {anchor[:16]} -> actual "
+                             f"{shown}")
+    return anchor
+
+
+def step_gate(ctx: Context) -> int:
+    """The ``verify-gate`` job: export ``verified_manifest_sha256`` only for a complete verify.
+
+    Inputs are job outputs only: ``CI_MANIFEST_SHA256`` (package stage) and
+    ``CI_VERIFY_RESULTS`` (JSON object leg -> the verify job's
+    ``verified_<leg>``). The workflow runs this job only when every verify leg
+    succeeded (``needs: verify``, implicit ``success()``); this step
+    independently requires every packaging leg of ``legs.json`` to report
+    exactly the anchored digest, so a partial matrix can never satisfy the
+    publish stage's gate (ADR 0005 D6).
+    """
+    start = time.monotonic()
+    label = "verify gate"
+    anchor = env_names.get("CI_MANIFEST_SHA256")
+    results = _json_input("CI_VERIFY_RESULTS") if env_names.get("CI_VERIFY_RESULTS") else {}
+    if not isinstance(results, dict):
+        raise UsageError("CI_VERIFY_RESULTS must be a JSON object leg -> digest")
+    legs = _packaging_legs()
+    try:
+        verified = verify_gate(anchor, results, legs)
+    except ValueError as exc:
+        return ctx.fail(label, str(exc), start)
+    ctx.reporter.set_output("verified_manifest_sha256", verified)
+    return _record_ok(ctx, label, f"{len(legs)} of {len(legs)} packaging legs verified manifest "
+                                  f"{verified[:16]}; verified_manifest_sha256 set", start)
+
+
+def _registry_url(ctx: Context) -> str:
+    """The published registry: ``https://github.com/$CI_REPOSITORY`` on CI, the portfile URL locally.
+
+    Raises:
+        UsageError: Neither is well formed.
+    """
+    repo = env_names.get("CI_REPOSITORY")
+    if repo:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}", repo):
+            raise UsageError("CI_REPOSITORY must be owner/name")
+        return f"https://github.com/{repo}"
+    if not ctx.local:
+        raise UsageError("CI_REPOSITORY is required on CI (the published registry)")
+    text = (ctx.workspace / "ports" / "smbios-c" / "portfile.cmake").read_text(encoding="utf-8")
+    match = re.search(r"^\s*URL\s+(https://github\.com/[A-Za-z0-9._/-]+?)(?:\.git)?\s*$", text,
+                      re.MULTILINE)
+    if match is None:
+        raise UsageError("ports/smbios-c/portfile.cmake has no github.com URL")
+    return match.group(1)
+
+
+def step_verify_registry(ctx: Context) -> int:
+    """Nightly: the vcpkg consumer test against the **published** registry, no overlay (D7).
+
+    ``vcpkg_registry_smoke.run`` with the registry ``https://github.com/<repo>``
+    (fetched like any consumer, never this checkout) at baseline
+    ``CI_COMMIT`` (the scheduled run's ``master`` commit: the newest baseline
+    a consumer can pin). It builds the port cold (pinned vcpkg,
+    ``VCPKG_BINARY_SOURCES=clear``), runs the consumer, checks the export
+    allowlist (``nm``; ``dumpbin`` on Windows) and the exact installed-file set.
+    """
+    import consumer_smoke
+    import vcpkg_registry_smoke
+    import verify_deps
+    start = time.monotonic()
+    label = f"registry consumer {ctx.leg.name}"
+    if not ctx.local and ctx.event != "schedule":
+        return ctx.skip(label, "nightly only (ADR 0005 D7; the registry consumer check)")
+    url = _registry_url(ctx)
+    if ctx.local:
+        vcpkg_root = Path(os.environ.get("VCPKG_ROOT", ""))
+        baseline = vcpkg_registry_smoke.head_commit(ctx.workspace)
+        triplet = None
+    else:
+        rc, tools_ok = _tools(ctx)
+        if rc != 0:
+            return rc
+        step_env(ctx)
+        if tools_ok is not None:
+            ctx.emit(ctx.reporter.step_ok("pinned tools", *tools_ok))
+        tool = _bootstrap_vcpkg(ctx)
+        if not tool.is_file():
+            return ctx.fail(label, "vcpkg bootstrap: expected ok -> actual failed", start)
+        vcpkg_root = tool.parent
+        baseline = _commit(ctx)
+        triplet = verify_deps.TRIPLETS.get(ctx.leg.name)
+    consumer_smoke.PHASE_TIMEOUT_S["configure vcpkg consumer"] = REGISTRY_TIMEOUT_S
+    work = ctx.temp_dir / "registry-consumer"
+    try:
+        lines = vcpkg_registry_smoke.run(work, vcpkg_root=vcpkg_root, repo_root=ctx.workspace,
+                                         triplet=triplet, registry_url=url, baseline=baseline)
+    except consumer_smoke.SmokeError as exc:
+        first, *tail = str(exc).splitlines() or ["failed"]
+        return ctx.fail(label, first, start, tail)
+    return _record_ok(ctx, label, f"{url} @ {baseline[:12]}, no overlay: " + ", ".join(lines),
+                      start)
+
+
+def step_releases(ctx: Context) -> int:
+    """Nightly: re-check the last :data:`RECHECK_COUNT` published releases, anonymously (RP-7).
+
+    ``post_publish_check.recheck`` against ``release_ledger.json`` (the
+    out-of-band anchor of each release). No credential: the job is
+    ``contents: read`` with no environment, and this step refuses to run if
+    ``CI_PUBLISH_TOKEN`` is set at all. A failure names the release; it is not
+    a rollback.
+    """
+    import post_publish_check as ppc
+    start = time.monotonic()
+    label = "release re-check"
+    if not ctx.local and ctx.event != "schedule":
+        return ctx.skip(label, "nightly only (threat model constraint 11)")
+    if os.environ.get("CI_PUBLISH_TOKEN"):
+        return ctx.fail(label, "expected no credential (constraint 11: post-publish checks see "
+                               "what consumers see) -> actual CI_PUBLISH_TOKEN set", start)
+    repo = env_names.get("CI_REPOSITORY") or _registry_url(ctx).split("github.com/", 1)[1]
+    try:
+        client = ppc.AnonymousClient(repo)
+        summary = ppc.recheck(client, ppc.load_ledger(), _packaging_legs(),
+                              lambda line: ctx.emit(ctx.reporter.info(line)),
+                              count=RECHECK_COUNT)
+    except ppc.CheckError as exc:
+        return ctx.fail(label, str(exc), start)
+    return _record_ok(ctx, label, summary, start)
+
+
 StepFn = Callable[[Context], int]
 STEP_FUNCTIONS: Final[Dict[str, Dict[str, StepFn]]] = {
     "lint": {"env": step_env, "self-test": step_self_test, "lint": step_lint,
@@ -1436,9 +1873,11 @@ STEP_FUNCTIONS: Final[Dict[str, Dict[str, StepFn]]] = {
              "gui-hooks": step_gui_hooks, "gui-ci": step_gui_ci, "gui-local": step_gui_local},
     "package": {"env": step_env, "unpack": step_unpack, "archive": step_archive,
                 "manifest": step_manifest},
+    "verify": {"deps": step_deps, "artifact": step_artifact, "gate": step_gate,
+               "registry": step_verify_registry, "releases": step_releases},
 }
 #: Stages that stop at the first failing step (later steps depend on earlier ones).
-STOP_ON_FAILURE: Final = ("build", "package")
+STOP_ON_FAILURE: Final = ("build", "package", "verify")
 
 
 def _combine(codes: Sequence[int]) -> int:
@@ -1457,7 +1896,7 @@ def steps_for(stage_name: str, leg: Leg) -> Tuple[str, ...]:
 def run_stage(ctx: Context, only: Optional[str]) -> int:
     """Run ``only`` or every step of ``ctx.stage`` for the leg's job; return the SC1 exit code."""
     own = steps_for(ctx.stage, ctx.leg)
-    if only and only not in own:
+    if only and only not in own and only not in ONLY_STEPS.get(ctx.stage, ()):
         return ctx.skip(f"{ctx.stage} {only}", f"not a step of the {ctx.leg.job} job")
     ctx.only = only
     names = [only] if only else list(own)
@@ -1767,6 +2206,7 @@ def run_publish(args: argparse.Namespace) -> int:
         ci_step.emit_error(f"stage.py: error: {exc}")
         return EXIT_USAGE
     import importlib
+    import post_publish_check
     import publish_inputs as pin
     import registry_update
     module = importlib.import_module(DESTINATION_MODULES[name])
@@ -1787,9 +2227,11 @@ def run_publish(args: argparse.Namespace) -> int:
         if args.only in unprivileged and had_secret:
             # RP-2 / constraint 1: a phase that runs the toolchain never shares
             # a job with a credential (the token is already out of os.environ).
+            why = ("constraint 11: post-publish checks see what consumers see"
+                   if args.only == "post-publish" else
+                   "RP-2: toolchain code never runs beside a token")
             raise pin.PublishInputError(f"{name} {args.only}: expected no credential in this "
-                                        "job (RP-2: toolchain code never runs beside a token) "
-                                        "-> actual CI_PUBLISH_TOKEN set")
+                                        f"job ({why}) -> actual CI_PUBLISH_TOKEN set")
         if not args.dry_run:
             _publish_gates(entry, name)
         inputs = _publish_inputs(entry, args.dry_run, log)
@@ -1809,7 +2251,11 @@ def run_publish(args: argparse.Namespace) -> int:
                        "0 requests, credential unread")
         elif args.only in unprivileged:
             pin.check_verify_gate(inputs.manifest.sha256, verified)
-            summary = _publish_prepare(name, inputs, reporter, log)
+            if args.only == "prepare":
+                summary = _publish_prepare(name, inputs, reporter, log)
+            else:
+                # post-publish (Task 04): anonymous, no API client with a token.
+                summary = module.post_publish(inputs, env_names.get("CI_REPOSITORY"), log)
         else:
             pin.check_verify_gate(inputs.manifest.sha256, verified)
             kwargs = {}
@@ -1831,6 +2277,7 @@ def run_publish(args: argparse.Namespace) -> int:
             else:
                 summary = getattr(module, args.only)(api, inputs, log, **kwargs)
     except (pin.PublishInputError, registry_update.RegistryError,
+            post_publish_check.CheckError,
             getattr(module, "PublishError", pin.PublishInputError)) as exc:
         text = str(exc).splitlines()[0] if str(exc) else "refused"
         elapsed = round(time.monotonic() - start, 1)
@@ -1861,8 +2308,8 @@ def build_context(stage: str, leg_value: Optional[str], reporter: Reporter,
     if leg_value is None:
         leg_value = env_names.get("CI_LEG") or None
     if leg_value is None and plat == "local":
-        leg_value = ("linux" if stage == "lint" else host_packaging_leg() if stage == "package"
-                     else host_leg())
+        leg_value = ("linux" if stage == "lint" else host_packaging_leg()
+                     if stage in ("package", "verify") else host_leg())
     leg = validate_leg(stage, leg_value, legs)
     event = env_names.get("CI_EVENT")
     ref = env_names.get("CI_REF")

@@ -1,7 +1,7 @@
 # Reusable `publish` stage, release tier (milestone 0012 Story 04.0 Tasks 02-03;
-# ADR 0005 D6, D8, D9). Four jobs, all guarded to a v* tag push. The GitHub
+# ADR 0005 D6, D8, D9). Five jobs, all guarded to a v* tag push. The GitHub
 # Release: two jobs, both permission class repo-write, both in the `release`
-# environment:
+# environment, then an unprivileged post-publish check (Task 04):
 #
 #   release-draft:   stage.py publish --destination github-release --only draft
 #     creates ONE draft release (target_commitish = the run's commit), uploads
@@ -31,9 +31,19 @@
 # 7. Create-only: an existing published release or another run's draft is a
 #    hard failure; the only exception is this run's own marked draft.
 # Publish also requires verified_manifest_sha256 (the same run's verify
-# result) to equal manifest_sha256. Verify is Task 04: until then it is empty
-# and publish fails closed. The github-release registry entry also ships
-# `enabled: false` until settings S-1..S-8 are read back (constraint 12).
+# result, set by stage-verify.yml's verify-gate only when every packaging leg
+# verified this manifest) to equal manifest_sha256; empty or different, it
+# refuses. The github-release registry entry also ships `enabled: false`
+# until settings S-1..S-8 are read back (constraint 12).
+#
+#   post-publish:    stage.py publish --destination github-release --only post-publish
+#     (Task 04; threat model constraint 11, RP-7) contents: read, NO
+#     environment, NO credential, not in publish_jobs.json. Downloads the
+#     promoted release's assets anonymously from their public URLs (redirects
+#     only to *.githubusercontent.com over HTTPS, each body cut off at its
+#     manifest size), requires the exact asset name set, and compares them
+#     with this run's anchored manifest - never with the release's own
+#     manifest.json alone. A failure names the release; it is not a rollback.
 #
 # The registry update (Task 03; threat model RP-2, RP-9, constraints 1, 5, 8-10),
 # final release tags only (`registry` input: plan.py gives a pre-release tag
@@ -74,7 +84,7 @@ on:
         type: string
         required: true
       verified_manifest_sha256:
-        description: The manifest digest the same run's verify stage passed (empty until 0012 Story 04.0 Task 04)
+        description: The manifest digest every leg of the same run's verify stage passed (stage-verify.yml verify-gate; empty means refuse)
         type: string
         required: false
         default: ''
@@ -198,6 +208,53 @@ jobs:
           CI_BUILD_BINARY_CACHE: ${{ matrix.binary_cache }}
           CI_PUBLISH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # Constraint 11 / RP-7: sees what a consumer sees. contents: read, no
+  # environment, no secret (policy P12 enforces all three for a post-publish
+  # step), and stage.py refuses the phase if CI_PUBLISH_TOKEN is set at all.
+  # The expected bytes are this run's dist/, anchored by manifest_sha256.
+  post-publish:
+    name: publish (post-publish)
+    needs: release-promote
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - manifest_sha256: ${{ inputs.manifest_sha256 }}
+            verified_manifest_sha256: ${{ inputs.verified_manifest_sha256 }}
+            binary_cache: ${{ inputs.binary_cache }}
+    env:
+      CI_JOB: post-publish
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
+        with:
+          persist-credentials: false
+
+      - name: Download dist
+        id: download-dist
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with:
+          artifact-ids: ${{ inputs.dist_artifact_id }}
+          path: ${{ runner.temp }}/artifacts/dist
+          merge-multiple: true
+
+      - name: Post-publish check
+        id: post-publish
+        run: python3 scripts/ci/stage.py publish --destination github-release --only post-publish
+        timeout-minutes: 6
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+          CI_MANIFEST_SHA256: ${{ matrix.manifest_sha256 }}
+          CI_VERIFIED_MANIFEST_SHA256: ${{ matrix.verified_manifest_sha256 }}
+          CI_BUILD_BINARY_CACHE: ${{ matrix.binary_cache }}
+
   # Unprivileged (RP-2): no environment, no secret, contents: read. Everything
   # that executes third-party or toolchain code in the registry update runs
   # here and hands over files by artifact ID plus sha256 job outputs.
@@ -206,7 +263,9 @@ jobs:
     needs: release-promote
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && inputs.registry
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # Maintainer ruling 2026-11-18: cold-build steps get 45 minutes (measured cold
+    # run: 34 min); job = 3 + 2 + 45 + 2. Exceeds C11's 30 (step_budgets.json).
+    timeout-minutes: 52
     permissions:
       contents: read
     strategy:
@@ -242,12 +301,13 @@ jobs:
           merge-multiple: true
 
       # Refuses if any credential is present (RP-2). Cold vcpkg build of the
-      # port and its Boost dependencies (no cache in this file, P15); the job
-      # stays within inventory C11's 30-minute ceiling (step_budgets.json).
+      # port and its Boost dependencies (no cache in this file, P15): 45 minutes
+      # by the maintainer's 2026-11-18 ruling (the one real cold run measured
+      # 34; see step_budgets.json).
       - name: Prepare
         id: prepare
         run: python3 scripts/ci/stage.py publish --destination vcpkg-registry --only prepare
-        timeout-minutes: 24
+        timeout-minutes: 45
         env:
           CI_TEMP_DIR: ${{ runner.temp }}
           CI_MANIFEST_SHA256: ${{ matrix.manifest_sha256 }}

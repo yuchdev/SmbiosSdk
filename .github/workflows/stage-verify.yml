@@ -1,30 +1,58 @@
-# Reusable `verify` stage - PLACEHOLDER (milestone 0012 Story 04.0 Task 02;
-# completed by Task 04; ADR 0005 D1/D6/D8).
+# Reusable `verify` stage (milestone 0012 Story 04.0 Task 04; ADR 0005 D1, D4,
+# D6, D7). Every `run:` step is one stage-command line (P7); the logic is in
+# scripts/ci/stage.py (steps deps, artifact, gate, registry, releases) and the
+# libraries it calls (verify_release_artifact.py, verify_deps.py, msvc_env.py,
+# export_symbols.py, vcpkg_registry_smoke.py, post_publish_check.py).
 #
-# Task 02 adds this file only so that the publish caller in ci.yml can carry
-# `needs: verify` (ADR 0005 D6, policy P12) in the form Task 04 completes. It
-# fails closed in three independent ways until Task 04 lands:
-#   - plan.py reports `verify` as "not run: stage not defined", so its leg list
-#     is [] and ci.yml skips this job (and with it the publish caller);
-#   - if it ever ran, `stage.py verify` exits 2 ("stage verify is not defined
-#     yet");
-#   - it never sets verified_manifest_sha256, and `stage.py publish` refuses
-#     to publish without it.
-# Task 04 replaces the step with the clean-room checks of
-# docs/roadmap/0012-package-manager-distribution/04.0-release-and-publish-automation/04-post-publish-verification.md
-# and sets verified_manifest_sha256 only after every leg passed.
+# Called by ci.yml on every event whose plan schedules `verify` (PRs to master,
+# master pushes, nightly and v* tags; never a branch push or docs-only change,
+# D7). No credential and no cache anywhere in this file (P8, P15): workflow
+# permissions are contents: read, and every job inherits them.
 #
-# The shape it already follows (threat model 2026-11-18 RP-4, constraint 4):
-# `dist` is downloaded by the package stage's artifact ID, never by name, and
-# the manifest digest arrives as a job output, not inside the artifact. No
-# credential, no cache (P15).
+# Jobs:
+#   verify (one per packaging leg, on a runner of that leg's own OS and
+#     architecture): `dist` downloaded by the package stage's artifact ID
+#     (never by name, RP-4), then
+#       deps     - pinned tools (+ pkgconf on Windows), RC4 header, pinned
+#                  vcpkg, and boost-iostreams built cold into its own prefix
+#                  under runner.temp: the Boost a release consumer brings
+#                  (libsmbiosConfig.cmake find_dependency), never the archive;
+#       artifact - sha256(manifest.json) against the package stage's
+#                  manifest_sha256 BEFORE parsing; every archive and .sha256
+#                  of every leg against the manifest (a corrupted asset fails
+#                  here); install_sha256 against the build job's output; then
+#                  the clean-room checks of verify_release_artifact.py:
+#                  extraction into an empty directory, layout and tree digest,
+#                  the literal `pkg-config --cflags --libs smbios_c` + C
+#                  consumer, find_package(libsmbios CONFIG) consumer, and the
+#                  nm/dumpbin export allowlist. Only after all of it passes
+#                  does the step set verified_<leg> (one unique output name
+#                  per leg, so the matrix keeps every leg's value).
+#   verify-gate: needs verify with the implicit success() (no if:), so it
+#     runs only when EVERY verify leg succeeded - a failed, cancelled or
+#     skipped leg skips it. It then requires every packaging leg of
+#     scripts/ci/legs.json to report exactly the anchored manifest digest,
+#     and only then sets verified_manifest_sha256, this workflow's only output.
+#     A partial matrix, or a leg that verified another manifest, yields no
+#     value, and stage.py publish refuses without one (ADR 0005 D6).
+#   registry-consumer (nightly only, per leg): the vcpkg consumer test against
+#     the PUBLISHED registry (https://github.com/<repo> at the scheduled
+#     commit), no overlay, cold; export allowlist (dumpbin on Windows) and the
+#     exact installed-file set. Its own budget: a cold port build.
+#   release-recheck (nightly only): the last 5 published GitHub Releases,
+#     downloaded anonymously from their public URLs and compared with
+#     scripts/ci/release_ledger.json (threat model constraint 11, RP-7).
+#
+# Inputs reach steps only through matrix values, because P10 lets env: read
+# matrix.* but not inputs.* (the stage-package.yml pattern). Every value is
+# re-validated by stage.py.
 name: stage-verify
 
 on:
   workflow_call:
     inputs:
       legs:
-        description: JSON list of packaging legs to verify (from the plan job)
+        description: JSON list of {leg, install_sha256, manifest_sha256}, one per packaging leg (ci.yml)
         type: string
         required: true
       manifest_sha256:
@@ -37,8 +65,8 @@ on:
         required: true
     outputs:
       verified_manifest_sha256:
-        description: The manifest digest every verify leg passed (never set until Task 04)
-        value: ${{ jobs.verify.outputs.verified_manifest_sha256 }}
+        description: The manifest digest EVERY packaging leg verified (single-line JSON string; set only by verify-gate)
+        value: ${{ jobs.verify-gate.outputs.verified_manifest_sha256 }}
 
 permissions:
   contents: read
@@ -54,19 +82,134 @@ env:
   CI_REF_NAME: ${{ github.ref_name }}
   CI_COMMIT: ${{ github.sha }}
   CI_WORKSPACE: ${{ github.workspace }}
+  CI_REPOSITORY: ${{ github.repository }}
 
 jobs:
   verify:
     name: verify (${{ matrix.leg }})
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    runs-on: ${{ matrix.leg == 'windows-x64' && 'windows-2022' || matrix.leg == 'macos-arm64' && 'macos-15' || 'ubuntu-24.04' }}
+    # 2 + 2 + 45 (deps, cold Boost: maintainer ruling 2026-11-18) + 8 (artifact).
+    timeout-minutes: 57
     strategy:
       fail-fast: false
       matrix:
-        leg: ${{ fromJSON(inputs.legs) }}
-        manifest_sha256: ['${{ inputs.manifest_sha256 }}']
+        include: ${{ fromJSON(inputs.legs) }}
     outputs:
-      verified_manifest_sha256: ${{ steps.verify.outputs.verified_manifest_sha256 }}
+      verified_linux_x64: ${{ steps.artifact.outputs.verified_linux_x64 }}
+      verified_windows_x64: ${{ steps.artifact-win.outputs.verified_windows_x64 }}
+      verified_macos_arm64: ${{ steps.artifact.outputs.verified_macos_arm64 }}
+    env:
+      CI_JOB: verify
+      CI_LEG: ${{ matrix.leg }}
+      CI_INSTALL_SHA256: ${{ matrix.install_sha256 }}
+      CI_MANIFEST_SHA256: ${{ matrix.manifest_sha256 }}
+    steps:
+      # Only for scripts/ci and the two consumer fixtures, which the verifier
+      # copies into its scratch directory; it fails if any compile line,
+      # tool output or generated file names this checkout.
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
+        with:
+          persist-credentials: false
+
+      # The package stage's `dist` by artifact ID (constraint 4) into
+      # $CI_ARTIFACT_DIR/dist/.
+      - name: Download dist
+        id: download-dist
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with:
+          artifact-ids: ${{ inputs.dist_artifact_id }}
+          path: ${{ runner.temp }}/artifacts/dist
+          merge-multiple: true
+
+      - name: Dependencies
+        id: deps
+        if: matrix.leg != 'windows-x64'
+        run: python3 scripts/ci/stage.py verify --only deps
+        timeout-minutes: 45
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+
+      - name: Dependencies (Windows)
+        id: deps-win
+        if: matrix.leg == 'windows-x64'
+        run: python scripts/ci/stage.py verify --only deps
+        timeout-minutes: 45
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+
+      # Sets verified_<leg> last, only after every check passed.
+      - name: Verify archive
+        id: artifact
+        if: matrix.leg != 'windows-x64'
+        run: python3 scripts/ci/stage.py verify --only artifact
+        timeout-minutes: 8
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+
+      - name: Verify archive (Windows)
+        id: artifact-win
+        if: matrix.leg == 'windows-x64'
+        run: python scripts/ci/stage.py verify --only artifact
+        timeout-minutes: 8
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+
+  # The only job that sets this workflow's output. No `if:`: it inherits the
+  # implicit success() of `needs: verify`, so any failed, cancelled or skipped
+  # verify leg skips it and the output stays empty (publish then refuses).
+  verify-gate:
+    name: verify (gate)
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # One entry: the job outputs the gate step compares (P10: env: reads matrix.*).
+    # A leg that set nothing becomes "" and is refused by name.
+    strategy:
+      matrix:
+        include:
+          - manifest_sha256: ${{ inputs.manifest_sha256 }}
+            results: ${{ format('{{"linux-x64":{0},"windows-x64":{1},"macos-arm64":{2}}}', needs.verify.outputs.verified_linux_x64 || '""', needs.verify.outputs.verified_windows_x64 || '""', needs.verify.outputs.verified_macos_arm64 || '""') }}
+    outputs:
+      verified_manifest_sha256: ${{ steps.gate.outputs.verified_manifest_sha256 }}
+    env:
+      CI_JOB: verify
+      # The gate covers every packaging leg; the leg only labels the records.
+      CI_LEG: linux-x64
+      CI_MANIFEST_SHA256: ${{ matrix.manifest_sha256 }}
+      CI_VERIFY_RESULTS: ${{ matrix.results }}
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
+        with:
+          persist-credentials: false
+
+      - name: Gate
+        id: gate
+        run: python3 scripts/ci/stage.py verify --only gate
+        timeout-minutes: 2
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+
+  # Nightly (task success criterion 2): a consumer of the published registry.
+  # Cold vcpkg build of the port and its Boost dependencies; no cache (P15).
+  # Its budget is the 45-minute cold-build ruling, a recorded C11 exception
+  # (scripts/ci/step_budgets.json).
+  registry-consumer:
+    name: verify (registry consumer, ${{ matrix.leg }})
+    if: github.event_name == 'schedule'
+    runs-on: ${{ matrix.leg == 'windows-x64' && 'windows-2022' || matrix.leg == 'macos-arm64' && 'macos-15' || 'ubuntu-24.04' }}
+    # 2 + 45 (cold port build: maintainer ruling 2026-11-18, measured cold run 34 min).
+    timeout-minutes: 47
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.legs) }}
     env:
       CI_JOB: verify
       CI_LEG: ${{ matrix.leg }}
@@ -78,20 +221,45 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download dist
-        id: download-dist
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        timeout-minutes: 2
-        with:
-          artifact-ids: ${{ inputs.dist_artifact_id }}
-          path: ${{ runner.temp }}/artifacts/dist
-          merge-multiple: true
-
-      # Exits 2 until Task 04 defines the stage (fail closed).
-      - name: Verify
-        id: verify
-        run: python3 scripts/ci/stage.py verify
-        timeout-minutes: 5
+      - name: Registry consumer
+        id: registry
+        if: matrix.leg != 'windows-x64'
+        run: python3 scripts/ci/stage.py verify --only registry
+        timeout-minutes: 45
         env:
           CI_TEMP_DIR: ${{ runner.temp }}
-          CI_MANIFEST_SHA256: ${{ matrix.manifest_sha256 }}
+
+      - name: Registry consumer (Windows)
+        id: registry-win
+        if: matrix.leg == 'windows-x64'
+        run: python scripts/ci/stage.py verify --only registry
+        timeout-minutes: 45
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+
+  # Nightly re-check of the last 5 published releases (constraint 11): no
+  # credential, contents: read, no environment; anonymous public downloads only.
+  release-recheck:
+    name: verify (release re-check)
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      CI_JOB: verify
+      CI_LEG: linux-x64
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
+        with:
+          persist-credentials: false
+
+      - name: Re-check releases
+        id: releases
+        run: python3 scripts/ci/stage.py verify --only releases
+        timeout-minutes: 8
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}

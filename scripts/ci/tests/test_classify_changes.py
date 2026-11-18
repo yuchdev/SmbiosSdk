@@ -353,7 +353,7 @@ class TierTableTests(unittest.TestCase):
         covered = {leg for leg, r in result["legs"].items() if r == plan.NOT_RUN_COVERED}
         self.assertEqual(covered, set(LEGS["tiers"]["push_branch"]))
         self.assertEqual(result["stages"], {"package": plan.RUN,
-                                            "verify": plan.NOT_RUN_UNDEFINED,
+                                            "verify": plan.RUN,
                                             "publish": plan.NOT_RUN_TIER})
 
     def test_EveryLegRunsOnceAcrossPushAndSameRepoPr(self) -> None:
@@ -381,16 +381,19 @@ class TierTableTests(unittest.TestCase):
                 self.assertEqual(result["package"], ["linux-x64", "windows-x64", "macos-arm64"])
 
     def test_PublishIsTierOnlyOnTagAndMasterPush(self) -> None:
-        cases = {("tag", "refs/tags/v1.0.0"): plan.NOT_RUN_UNDEFINED,
-                 ("push", "refs/heads/master"): plan.NOT_RUN_UNDEFINED,
-                 ("schedule", "refs/heads/master"): plan.NOT_RUN_TIER,
-                 ("pr", "refs/pull/3/merge"): plan.NOT_RUN_TIER,
-                 ("push", "refs/heads/feature"): plan.NOT_RUN_TIER}
-        for (event, ref), want in cases.items():
+        # 0012 Story 04.0 Task 04 defined verify, so publish is runnable on its tiers;
+        # the real publish_jobs.json has release-tier jobs only (no staging row yet).
+        cases = {("tag", "refs/tags/v1.0.0"): (plan.RUN, ["release-draft", "release-promote",
+                                                          "registry-prepare", "registry-pr"]),
+                 ("push", "refs/heads/master"): (plan.RUN, []),
+                 ("schedule", "refs/heads/master"): (plan.NOT_RUN_TIER, []),
+                 ("pr", "refs/pull/3/merge"): (plan.NOT_RUN_TIER, []),
+                 ("push", "refs/heads/feature"): (plan.NOT_RUN_TIER, [])}
+        for (event, ref), (want, jobs) in cases.items():
             with self.subTest(event=event, ref=ref):
                 result = plan.matrix_for(event, ref, "full")
                 self.assertEqual(result["stages"]["publish"], want)
-                self.assertEqual(result["publish"], [])
+                self.assertEqual([r["job"] for r in result["publish"]], jobs)
 
     def test_PublishRowsFollowTheirTier(self) -> None:
         """A master push yields only staging rows; a tag only release rows; others none."""

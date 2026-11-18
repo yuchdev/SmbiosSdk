@@ -340,14 +340,20 @@ class PlanDrivenReportTests(unittest.TestCase):
         self.assertTrue(table.startswith("## CI: PASS"))
 
     def test_UndefinedStagesAreReasonRows(self) -> None:
-        # package is defined since 0012 Story 03.0: scheduled on a tag, its row says
-        # where the result is (never PASS); verify/publish are still undefined.
-        for event, ref, want, names in (
-                ("tag", "refs/tags/v1.0.0", "not run: stage not defined", ("verify", "publish")),
-                ("tag", "refs/tags/v1.0.0", run_report.STAGE_RUN, ("package",)),
-                ("push", "refs/heads/topic", "not run: tier", run_report.PIPELINE_STAGES)):
+        # package (0012 Story 03.0), publish (Story 04.0 Task 02) and verify (Task 04)
+        # are defined: scheduled on a tag, each row says where the result is (never
+        # PASS). An undefined stage still renders its reason (verify forced back).
+        undefined = self.parsed("tag", "refs/tags/v1.0.0", "full")
+        undefined["stages"]["verify"] = undefined["stages"]["publish"] = \
+            "not run: stage not defined"
+        for event, ref, want, names, parsed in (
+                ("tag", "refs/tags/v1.0.0", "not run: stage not defined", ("verify", "publish"),
+                 undefined),
+                ("tag", "refs/tags/v1.0.0", run_report.STAGE_RUN, run_report.PIPELINE_STAGES,
+                 None),
+                ("push", "refs/heads/topic", "not run: tier", run_report.PIPELINE_STAGES, None)):
             with self.subTest(event=event, want=want):
-                table = self.table(self.parsed(event, ref, "full"), {})
+                table = self.table(parsed or self.parsed(event, ref, "full"), {})
                 for stage_name in names:
                     row = next(ln for ln in table.splitlines()
                                if ln.startswith(f"| {stage_name} |"))

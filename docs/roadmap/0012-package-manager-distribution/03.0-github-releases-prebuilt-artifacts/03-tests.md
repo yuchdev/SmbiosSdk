@@ -1,9 +1,11 @@
 # 03 - Tests
 
 **Parent story:** [README.md](README.md)
-**Status:** 🔶 Partial (2026-11-17) - verifier and its tests delivered; all five checks pass on
-this host's leg (macOS x64); success criterion 1 completes when Story 04.0 Task 02 wires the
-`verify` stage on all three OSes - see As built
+**Status:** 🔶 Partial (2026-11-17; updated 2026-11-18) - verifier and its tests delivered; all
+five checks pass on this host's leg (macOS x64). Story 04.0 **Task 04** (not Task 02) wired the
+`verify` stage that runs them with `build=True` on each leg's own runner, plus a sixth check (the
+export allowlist). Success criterion 1 completes on the first green CI `verify` run on all three
+legs, which has not happened yet - see As built and the 2026-11-18 note
 
 ## Objective
 
@@ -43,7 +45,14 @@ implementation, e.g. `scripts/verify_release_artifact.sh`/`.ps1`) that:
 - [ ] On each of Windows, Linux, and macOS, a released artifact
       extracted on a clean machine (no vcpkg, no Conan, no checkout of
       this repo's source) passes all four checks above.
-      **Not met yet - deferred to Story 04.0 Task 02.** Checks 1, 2 and 5
+      **Not met yet. Wired by Story 04.0 Task 04 (2026-11-18); closes on its first green CI
+      run.** `stage.py verify` now runs this verifier with `build=True` and a relocatable `.pc`
+      required, on `ubuntu-24.04`, `windows-2022` and `macos-15` (arm64), each verifying its own
+      leg's archive from the same run's `dist/`, extracted into an empty directory, with Boost
+      from a separate prefix and no vcpkg or checkout reachable from the consumer. Locally the
+      stage was run against a real arm64 archive packaged on this x86_64 Mac (layout, digests,
+      literal `pkg-config` and the new export check pass; build/run `NOT EXECUTED`: wrong
+      architecture). Earlier record: checks 1, 2 and 5
       plus the layout and `pkg-config` resolution pass on all three CI
       artifacts of run 44074901424; the compile/link/run checks ran only
       on this host's leg (macOS x64, a locally packaged archive). No
@@ -222,7 +231,19 @@ printed `architecture mismatch: lib/libsmbios_c.dylib is built for x64,
 but the leg macos-arm64 is arm64`. `manifest.json` records the value as
 a required per-leg `arch` field, and the verifier checks it when present.
 
-**Not done here, by instruction:** no `verify` stage, job or workflow.
+**2026-11-18, Story 04.0 Task 04.** The `verify` stage now exists
+([Task 04](../04.0-release-and-publish-automation/04-post-publish-verification.md)). Its
+`artifact` step calls `run(archive, work_dir, build=True, require_relocatable_pc=True,
+dependency_prefixes=[<Boost prefix>])` on each packaging leg's own runner. A runner of another
+leg is a failure on CI, never a layout-only pass. It added **check 6**, the export allowlist of
+the extracted `smbios_c` library (`nm`; `dumpbin /exports` on Windows). Boost comes from a
+release-only `boost-iostreams` prefix that the pinned vcpkg builds cold outside the checkout and
+`VCPKG_ROOT`, and `pkg-config` on Windows from a hash-pinned `pkgconf` wheel. **Criterion 1 is
+still unchecked:** nothing has run on a hosted runner, because nothing was pushed. It closes,
+and this story with it, when the first CI `verify` run is green on `linux-x64`,
+`windows-x64` and `macos-arm64`, with the three `ok: verify <leg>` lines recorded here.
+
+**Not done here, by instruction (2026-11-17):** no `verify` stage, job or workflow.
 `stage.py verify` still exits 2. Story 04.0 Task 02 wires the stage by
 calling `verify_release_artifact.run(archive, work_dir, ...)` on each
 leg's own runner, where `build=True` is meaningful. It must provide

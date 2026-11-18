@@ -1,0 +1,5 @@
+{
+  "schema": 1,
+  "about": "Out-of-band anchors of published GitHub Releases (milestone 0012 Story 04.0 Task 04; threat model 2026-11-18 RP-7, standing constraint 11). One row per published release: {tag, commit, manifest_sha256, manifest_bytes}. The nightly re-check (stage.py verify --only releases, post_publish_check.recheck) downloads each of the last 5 published releases anonymously and requires its manifest.json to match this row before it trusts any digest in it; a published release without a row fails the re-check. A maintainer appends the row printed by the release's post-publish job (info line 'record in scripts/ci/release_ledger.json') through a normal reviewed PR, never by automation. Rows are never edited or removed. Empty until the first real release.",
+  "releases": []
+}

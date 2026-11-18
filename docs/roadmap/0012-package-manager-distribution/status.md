@@ -8,8 +8,8 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
 |-------|------------------------------------------------------------------|----------------|-------|
 | 01.0  | `libsmbios` install rules and whole-archive-safe package export | ✅ Complete | - |
 | 02.0  | Self-hosted vcpkg overlay/registry port for `smbios_c`           | ✅ Complete | 25 script tests; registry smoke (macOS); CI full tier green |
-| 03.0  | GitHub Releases prebuilt artifacts - pipeline `package` stage (ADR 0005) | 🔶 In progress (Tasks 01-02 complete; Task 03 partial: verifier delivered, H1 fixed, arch guard added; SC1 on all three OSes awaits Story 04.0 Task 02) | 55 + 57 script tests (`test_package_archive`, `test_verify_release_artifact`); CI run 44074901424 green on all 18 jobs; all five release checks pass on macOS x64 with the literal `pkg-config` command |
-| 04.0  | Release and publish automation - pipeline `verify`/`publish` stages (ADR 0005) | 🔶 In progress (Task 01 complete: root `project()` VERSION authoritative, `prepare_release.py`; RP-3 ruled 2026-11-18. Task 02 implemented: publish stage, `github-release` shipped `enabled: false`, RP-4 plumbing; Task 03 implemented: registry branch via `registry-prepare` + `registry-pr`, `vcpkg-registry` shipped `enabled: false`, append-only registry lint; criteria 1 of Tasks 02/03 blocked on S-1..S-8 read-back, Task 04 and a real tag) | 24 script tests (`test_prepare_release`); 47 publish tests (`test_publish_github_release`) plus RP-4 package, plan and policy cases; Task 03: 25 + 16 + 10 new (`test_publish_vcpkg_registry`, `test_registry_update`, `test_registry_prepare`) plus history, plan, version-rule, allowlist and policy cases |
+| 03.0  | GitHub Releases prebuilt artifacts - pipeline `package` stage (ADR 0005) | 🔶 In progress (Tasks 01-02 complete; Task 03 partial: verifier delivered, H1 fixed, arch guard added; SC1 on all three OSes wired by Story 04.0 Task 04's `verify` stage (2026-11-18), closes on its first green CI run) | 55 + 57 script tests (`test_package_archive`, `test_verify_release_artifact`); CI run 44074901424 green on all 18 jobs; all five release checks pass on macOS x64 with the literal `pkg-config` command |
+| 04.0  | Release and publish automation - pipeline `verify`/`publish` stages (ADR 0005) | 🔶 In progress (Task 01 complete: root `project()` VERSION authoritative, `prepare_release.py`; RP-3 ruled 2026-11-18. Task 02 implemented: publish stage, `github-release` shipped `enabled: false`, RP-4 plumbing; Task 03 implemented: registry branch via `registry-prepare` + `registry-pr`, `vcpkg-registry` shipped `enabled: false`, append-only registry lint; Task 04 implemented: `verify` stage + `verify-gate`, anonymous `post-publish`, nightly registry consumer check and 5-release re-check; criteria 1 of Tasks 02/03 blocked on S-1..S-8 read-back and a real tag, Task 04's on its first CI run) | 24 script tests (`test_prepare_release`); 47 publish tests (`test_publish_github_release`) plus RP-4 package, plan and policy cases; Task 03: 25 + 16 + 10 new (`test_publish_vcpkg_registry`, `test_registry_update`, `test_registry_prepare`) plus history, plan, version-rule, allowlist and policy cases; Task 04: 37 + 21 new (`test_verify_stage`, `test_post_publish_check`) plus verifier, registry-smoke, plan, report and 2 policy fixtures |
 
 **Legend:** ✅ Complete · 🔶 In progress / partial · ⬜ Not started
 
@@ -253,3 +253,42 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
 
   **Gates (local, macOS):** see the Task 03 record.
 
+- **2026-11-18 Story 04.0 Task 04 implemented (verify stage and post-publish check); not yet run on CI.** Details, budgets, and which constraint is enforced where: [Task 04 As built](04.0-release-and-publish-automation/04-post-publish-verification.md#as-built-2026-11-18). **No tag was pushed, and no release, draft, branch or PR was created.** Both destinations stay `enabled: false` (constraint 12).
+
+  **This unblocks Tasks 02 and 03.** `verify` is now a defined stage, so the plan gives a `v*` tag its publish rows. `verified_manifest_sha256` now has a producer.
+  - **`verify`** runs one job per packaging leg on its own runner.
+    - It anchors `dist/manifest.json` before parsing and checks every file against it.
+    - It checks `install_sha256` against the build job's output.
+    - It then runs Story 03.0's verifier with `build=True`, plus a new check 6: the `nm`/`dumpbin` export allowlist.
+    - It sets `verified_<leg>` only after all of that passed.
+  - **`verify-gate`** (`needs: verify`, no `if:`) runs only if every leg succeeded. It sets `verified_manifest_sha256` only if **every packaging leg of `legs.json`** reported the anchored digest.
+  - Publish still re-checks the value itself.
+
+  A failing, cancelled or skipped leg therefore leaves publish refusing. This is tested end to end (`FailingLegLeavesPublishRefusingTests`) and shown with the CLI.
+
+  **Post-publish (constraint 11, RP-7).** The `post-publish` job has `contents: read`, no environment and no credential; a new P12 rule and two fixtures enforce this. It:
+  - downloads the promoted release anonymously from its public URLs;
+  - follows redirects only to the three `*.githubusercontent.com` hosts;
+  - cuts each body off at the manifest size;
+  - requires the exact asset name set;
+  - compares everything with the run's anchored manifest, never with the release's own `manifest.json` alone.
+
+  The nightly re-check of the last 5 releases needs an out-of-band anchor that no spec named. It is the new reviewed `scripts/ci/release_ledger.json` (empty today). A maintainer appends the row the post-publish job prints.
+
+  **Registry consumer check (task criterion 2).** It runs nightly on all three OSes against `https://github.com/<repo>` at the scheduled `master` commit, with no overlay flag. **Run locally against the real registry today and passed** (macOS x64, cold, 32 min 05 s): `ok: registry consumer macos-arm64: https://github.com/yuchdev/SmbiosSdk @ 688736300da2, no overlay: smbios_open=ok structures=32, symbols=13, installed=10`. Linux and Windows wait for the first nightly.
+
+  **Task 03's deferred items are done.** The registry smoke is wired on Linux, macOS and Windows (nightly, own budget), and the Windows `.dll` symbol check uses `dumpbin /exports`; `symbols=skipped` is gone.
+
+  **Story 03.0 cannot close yet.** Its criterion 1 is wired on all three OSes, but it needs the first green CI `verify` run. Its Task 03 doc and README say so.
+
+  **Deviations, for review.**
+  - The verify stage gets Boost (which the archive's package config requires) from a release-only `boost-iostreams` prefix that the pinned vcpkg builds cold outside the checkout and `VCPKG_ROOT`. The archive itself never goes through vcpkg.
+  - **Maintainer ruling (2026-11-18): cold-build steps get 45 minutes.** The evidence is the measured 34-minute cold port build (Story 02.0); Task 03's 30 minutes on a 15-minute estimate would have failed the first tag run on its budget. It is applied to `registry-prepare/prepare` (24 -> 45, job 30 -> 52), `verify/deps` (45, job 57) and `registry-consumer/registry` (45, job timeout 47), recorded as `ruling_minutes` plus its reason in `step_budgets.json`. P4 now accepts that (budget = max(2 x median, ruling); tested). Fast steps (`artifact` 8, `gate` 2) are unchanged. **These three jobs exceed inventory C11's 30-minute job ceiling, by ruling.** C11 was not raised: `parity_check.py` allows exactly those jobs up to their recorded `ruling_minutes` and keeps 30 for every other job. Second data point: the Task 04 cold registry run took 32 min 05 s (partly contended).
+
+  **Unverifiable until CI and a real release:**
+  - every hosted-runner path, the Windows one most of all (`vcvars64.bat`, PyPI `pkgconf`, `cl`, `dumpbin`);
+  - real cold durations;
+  - GitHub's real release API and download redirects (only the loopback stub and `--dry-run` cover them);
+  - the ledger's protection (S-1/S-2).
+
+  **Gates (local, macOS):** see the Task 04 record.

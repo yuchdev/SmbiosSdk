@@ -167,12 +167,19 @@ LEGACY_TAG_SAMPLES: Tuple[str, ...] = ("1.0.2.202611131", "1.2.3.4")
 #: one run: line a publish job may hold. Its other steps may only be checkout and
 #: download-artifact by ``artifact-ids``.
 _PUBLISH_RUN = re.compile(r"^python3 scripts/ci/stage\.py publish --destination "
-                          r"[a-z0-9][a-z0-9-]{0,39}( --only [a-z]{1,20})?$")
+                          r"[a-z0-9][a-z0-9-]{0,39}( --only [a-z][a-z-]{0,19})?$")
 PUBLISH_STEP_ACTIONS: Tuple[str, ...] = ("actions/checkout", "actions/download-artifact")
 #: P12 (0012 Story 04.0 Task 03; RP-2, constraint 1): publish phases that run the
 #: toolchain (vcpkg, a compiler, a consumer test) and so belong in an
 #: unprivileged job, never in a listed (credentialed) publish job.
-UNPRIVILEGED_PUBLISH_PHASES: Tuple[str, ...] = ("prepare",)
+UNPRIVILEGED_PUBLISH_PHASES: Tuple[str, ...] = ("prepare", "post-publish")
+#: P12 (0012 Story 04.0 Task 04; threat model 2026-11-18 constraint 11, RP-7): a
+#: job running one of these sees what a consumer sees, so it must hold no
+#: credential at all: explicit ``permissions: contents: read`` only, no
+#: ``environment``, no ``secrets.`` reference, and no publish_jobs.json entry.
+_ANONYMOUS_RUN = re.compile(r"^python3? scripts/ci/stage\.py (?:publish --destination "
+                            r"[a-z0-9][a-z0-9-]{0,39} --only post-publish|verify --only "
+                            r"releases)$")
 #: P8 (RP-8, constraint 2): the only env: keys of the publish step a secret may fill.
 PUBLISH_CREDENTIAL_PREFIX = "CI_PUBLISH_"
 
@@ -1314,6 +1321,7 @@ class _WorkflowCheck:
             self.p5(job_id, job)
             self.p8_job(job_id, job)
             self.p12_job(job_id, job)
+            self.p12_anonymous(job_id, job)
             if "uses" in job:
                 self.uses(job_id, job["uses"], job_level=True)
             for index, step in self.steps(job):
@@ -1679,6 +1687,24 @@ class _WorkflowCheck:
                 self.v(job_id, "P12", "caller needs: verify", ",".join(_needs(job)) or "none")
             self.tier_guard(job_id, "P12", str(entry.get("tier")), [job.get("if")])
 
+    def p12_anonymous(self, job_id: str, job: YMap) -> None:
+        """Constraint 11: a post-publish or release re-check job holds no credential at all."""
+        bodies = [" ".join(str(step["run"]).split()) for _, step in self.steps(job)
+                  if isinstance(step, dict) and "run" in step]
+        if not any(_ANONYMOUS_RUN.fullmatch(b) for b in bodies):
+            return
+        expected = "anonymous check job (constraint 11): "
+        perms = job.get("permissions")
+        if not (isinstance(perms, dict) and _granted(perms) == {"contents: read"}):
+            self.v(job_id, "P12", expected + "explicit permissions: contents: read only",
+                   _render_perms(perms) if perms is not None else "inherited")
+        if _environment(job):
+            self.v(job_id, "P12", expected + "no environment", _environment(job))
+        if _uses_secrets(job):
+            self.v(job_id, "P12", expected + "no secrets reference", "secrets reference")
+        if self.policy.publish_job(self.name, job_id) is not None:
+            self.v(job_id, "P12", expected + "not a publish_jobs.json entry", "listed")
+
     # P14 ----------------------------------------------------------------
     def p14(self, loc: str, step: YMap) -> None:
         if _action_name(str(step["uses"])) != "actions/checkout":
@@ -2040,7 +2066,14 @@ def check_publish_registry(policy: Policy, workflows_dir: Path) -> List[Violatio
 
 
 def check_budgets(policy: Policy) -> List[Violation]:
-    """P4: every job budget is 2x its baseline median (worst leg), rounded up to minutes."""
+    """P4: every job budget is 2x its baseline median (worst leg), rounded up to minutes.
+
+    A job entry may also carry a recorded maintainer ruling (0012 Story 04.0
+    Task 04, the 45-minute cold-build step ruling of 2026-11-18):
+    ``ruling_minutes`` (an integer) with a non-empty ``ruling`` text naming its
+    evidence. The budget is then ``max(2 x median, ruling_minutes)``: a ruling
+    can only raise a budget, and never without its reason in the data file.
+    """
     out: List[Violation] = []
     file = policy.paths.get("budgets", "step_budgets.json")
     if not isinstance(policy.budgets.get("default_job_minutes"), int):
@@ -2053,6 +2086,14 @@ def check_budgets(policy: Policy) -> List[Violation]:
             out.append(Violation(file, f"jobs/{job}", "P4", "median_s per leg", "missing"))
             continue
         want = math.ceil(2 * max(medians.values()) / 60)
+        if "ruling_minutes" in entry:
+            ruling = entry.get("ruling_minutes")
+            if not (type(ruling) is int and ruling > 0 and isinstance(entry.get("ruling"), str)
+                    and entry["ruling"].strip()):
+                out.append(Violation(file, f"jobs/{job}", "P4",
+                                     "ruling_minutes (integer) with a ruling text", "malformed"))
+                continue
+            want = max(want, ruling)
         if entry.get("budget_minutes") != want:
             out.append(Violation(file, f"jobs/{job}", "P4", f"budget_minutes {want}",
                                  entry.get("budget_minutes")))

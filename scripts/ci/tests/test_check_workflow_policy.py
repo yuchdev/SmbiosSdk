@@ -136,7 +136,10 @@ class OneViolationPerRule(unittest.TestCase):
                      "p8_publish_secret_at_job_level",
                      # 2026-11-18 threat model RP-2, RP-9 (0012 Story 04.0 Task 03)
                      "p12_publish_prepare_in_credentialed_job",
-                     "p12_registry_pr_pull_requests_write"):
+                     "p12_registry_pr_pull_requests_write",
+                     # 2026-11-18 threat model constraint 11, RP-7 (0012 Story 04.0 Task 04)
+                     "p12_post_publish_inherited_permissions",
+                     "p12_release_recheck_with_environment"):
             self.assertTrue((WORKFLOW_FIXTURES / name).is_dir(), name)
 
     def test_SameRepoComparisonIsTheOnlyHeadRepoUse(self) -> None:
@@ -187,7 +190,9 @@ class PublishJobShape(unittest.TestCase):
                 ("p12_publish_download_by_name", "P12", "name"),
                 ("p8_publish_secret_at_job_level", "P8", "job-level secrets reference"),
                 ("p12_publish_prepare_in_credentialed_job", "P12", "--only prepare"),
-                ("p12_registry_pr_pull_requests_write", "P12", "pull-requests: write")):
+                ("p12_registry_pr_pull_requests_write", "P12", "pull-requests: write"),
+                ("p12_post_publish_inherited_permissions", "P12", "inherited"),
+                ("p12_release_recheck_with_environment", "P12", "release")):
             with self.subTest(case=name):
                 (violation,) = run_case(WORKFLOW_FIXTURES / name)
                 self.assertEqual(violation.rule, rule)
@@ -199,12 +204,14 @@ class PublishJobShape(unittest.TestCase):
         Task 03 (RP-2): ``registry-prepare`` runs the toolchain phase with
         ``contents: read``, no environment and no secret, and is not a listed
         publish job; ``registry-pr`` is listed with ``contents: write`` only.
+        Task 04 (constraint 11): ``post-publish`` likewise, after ``release-promote``.
         """
         root = gate.load_yaml((REAL_WORKFLOWS / "stage-publish.yml").read_text(encoding="utf-8"))
-        self.assertEqual(sorted(root["jobs"]), ["registry-pr", "registry-prepare",
+        self.assertEqual(sorted(root["jobs"]), ["post-publish", "registry-pr", "registry-prepare",
                                                 "release-draft", "release-promote"])
         phases = {"release-draft": ("github-release", "draft"),
                   "release-promote": ("github-release", "promote"),
+                  "post-publish": ("github-release", "post-publish"),
                   "registry-prepare": ("vcpkg-registry", "prepare"),
                   "registry-pr": ("vcpkg-registry", "branch")}
         listed = {e["job"] for e in gate.load_policy().publish_jobs}
@@ -221,6 +228,12 @@ class PublishJobShape(unittest.TestCase):
         self.assertNotIn("environment", prepare)
         self.assertNotIn("secrets.", str(prepare))
         self.assertNotIn("registry-prepare", listed)
+        post = root["jobs"]["post-publish"]
+        self.assertEqual(gate._granted(post["permissions"]), {"contents: read"})
+        self.assertNotIn("environment", post)
+        self.assertNotIn("secrets.", str(post))
+        self.assertNotIn("post-publish", listed)
+        self.assertEqual(gate._needs(post), ["release-promote"])
         self.assertIn("registry-pr", listed)
         self.assertEqual(gate._granted(root["jobs"]["registry-pr"]["permissions"]),
                          {"contents: write"})
@@ -427,6 +440,28 @@ class RegistryRules(_TmpCase):
         self.edit_json(budgets, lambda d: d["jobs"]["build"].update(budget_minutes=40))
         (v,) = run_case(GOOD, **{"step_budgets.json": budgets})
         self.assertEqual((v.rule, v.expected), ("P4", "budget_minutes 18"))
+
+    def test_RecordedRulingRaisesABudgetOnlyWithItsReason(self) -> None:
+        """0012 Story 04.0 Task 04: the maintainer's 45-minute cold-build ruling."""
+        budgets = self.tmp / "step_budgets.json"
+        for edit, expected in (
+                (dict(ruling_minutes=40, ruling="measured 34 min", budget_minutes=40), None),
+                (dict(ruling_minutes=40, ruling="measured 34 min", budget_minutes=18),
+                 "budget_minutes 40"),
+                (dict(ruling_minutes=5, ruling="lower", budget_minutes=18), None),
+                (dict(ruling_minutes=40, budget_minutes=40),
+                 "ruling_minutes (integer) with a ruling text"),
+                (dict(ruling_minutes="40", ruling="x", budget_minutes=40),
+                 "ruling_minutes (integer) with a ruling text")):
+            with self.subTest(edit=edit):
+                shutil.copy(gate.PolicyFiles.step_budgets, budgets)
+                self.edit_json(budgets, lambda d: d["jobs"]["build"].update(edit))
+                found = run_case(GOOD, **{"step_budgets.json": budgets})
+                if expected is None:
+                    self.assertEqual(found, [])
+                else:
+                    (v,) = found
+                    self.assertEqual((v.rule, v.expected), ("P4", expected))
 
     def test_PinsFileFloatingLabel(self) -> None:
         pins = self.tmp / "pins.json"

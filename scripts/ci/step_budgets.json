@@ -31,7 +31,31 @@
       "median_s": {
         "linux": 900
       },
-      "budget_minutes": 30
+      "budget_minutes": 52,
+      "ruling": "Maintainer ruling 2026-11-18 (relayed in 0012 Story 04.0 Task 04): a step dominated by a cold dependency build gets 45 minutes. Evidence: the one real cold run of the registry consumer build (four Boost ports and the repository) measured 34 minutes on the developer Mac (Story 02.0; Task 03 had set 30 on an estimated 15-minute median, so the first tag run would have failed on its budget, not on a defect). The job keeps its median estimate; ruling_minutes = the 45-minute step plus the job's other steps' budgets. EXCEEDS inventory C11's 30-minute job ceiling - recorded, not silently capped. registry-prepare: checkout 3 + download 2 + prepare 45 + upload 2 = 52.",
+      "ruling_minutes": 52
+    },
+    "verify": {
+      "source": "0012 Story 04.0 Task 04: no CI run exists yet, so median_s is an ESTIMATE, not a baseline. Per leg: checkout + dist download (~1 min), pinned tools + vcpkg bootstrap (~2 min), boost-iostreams built cold into its own prefix (DEPS), the clean-room checks (~2 min; a Visual Studio configure on Windows ~3). DEPS is scaled from the cold boost-iostreams install measured on the developer Mac (see the Task 04 doc), Windows x2 as the build job's own Windows/Linux median ratio (534/261). 2 x 14 min = 28, within inventory C11's 30-minute job ceiling. Replace with the median of real runs.",
+      "median_s": {
+        "linux": 420,
+        "macos": 420,
+        "windows": 840
+      },
+      "budget_minutes": 57,
+      "ruling": "Maintainer ruling 2026-11-18 (relayed in 0012 Story 04.0 Task 04): a step dominated by a cold dependency build gets 45 minutes. Evidence: the one real cold run of the registry consumer build (four Boost ports and the repository) measured 34 minutes on the developer Mac (Story 02.0; Task 03 had set 30 on an estimated 15-minute median, so the first tag run would have failed on its budget, not on a defect). The job keeps its median estimate; ruling_minutes = the 45-minute step plus the job's other steps' budgets. EXCEEDS inventory C11's 30-minute job ceiling - recorded, not silently capped. verify: its deps step builds boost-iostreams cold; checkout 2 + download 2 + deps 45 + artifact 8 = 57. The artifact step (digests, layout, consumers) stays at 8.",
+      "ruling_minutes": 57
+    },
+    "registry-consumer": {
+      "source": "0012 Story 04.0 Task 04: nightly only, never on the PR or release path. ESTIMATE: a cold vcpkg build of the smbios-c port (four Boost ports and the whole repository) plus the consumer. Measured cold on the developer Mac: 34 min (Story 02.0) and again in Task 04 (see its doc); Windows is the slowest leg (the build job's ratio). Median estimate 30 min, so the budget is 60 min: a RECORDED EXCEPTION to inventory C11's 30-minute ceiling, for the maintainer to ratify or reject (the alternative is a non-cold, cached registry check, which P15 forbids in stage-verify.yml). Replace with the median of real nightly runs.",
+      "median_s": {
+        "linux": 1500,
+        "macos": 1500,
+        "windows": 1800
+      },
+      "budget_minutes": 60,
+      "ruling": "Maintainer ruling 2026-11-18 (relayed in 0012 Story 04.0 Task 04): a step dominated by a cold dependency build gets 45 minutes. Evidence: the one real cold run of the registry consumer build (four Boost ports and the repository) measured 34 minutes on the developer Mac (Story 02.0; Task 03 had set 30 on an estimated 15-minute median, so the first tag run would have failed on its budget, not on a defect). The job keeps its median estimate; ruling_minutes = the 45-minute step plus the job's other steps' budgets. EXCEEDS inventory C11's 30-minute job ceiling - recorded, not silently capped. registry-consumer: its registry step is the same cold port build; step 45 (lowered from 57 to the ruled ceiling), job timeout 47 (checkout 2 + 45). The 2 x median formula already gives 60, so ruling_minutes does not raise it.",
+      "ruling_minutes": 47
     }
   },
   "steps": {
@@ -86,6 +110,23 @@
     "gui/upload-summary": 2,
     "report/checkout": 2,
     "report/download": 2,
-    "report/report": 2
+    "report/report": 2,
+    "verify/checkout": 2,
+    "verify/download-dist": 2,
+    "verify/deps": 45,
+    "verify/deps-win": 45,
+    "verify/artifact": 8,
+    "verify/artifact-win": 8,
+    "verify-gate/checkout": 2,
+    "verify-gate/gate": 2,
+    "registry-consumer/checkout": 2,
+    "registry-consumer/registry": 45,
+    "registry-consumer/registry-win": 45,
+    "release-recheck/checkout": 2,
+    "release-recheck/releases": 8,
+    "post-publish/checkout": 2,
+    "post-publish/download-dist": 2,
+    "post-publish/post-publish": 6,
+    "registry-prepare/prepare": 45
   }
 }

@@ -75,7 +75,11 @@ REQUIRED_ENV: Tuple[str, ...] = ("CI_PUBLISH_TOKEN", "CI_REPOSITORY", "CI_COMMIT
                                  "CI_RUN_ID", "CI_MANIFEST_SHA256",
                                  "CI_VERIFIED_MANIFEST_SHA256", "CI_BUILD_BINARY_CACHE")
 #: Phases, one per publish job (ADR 0005 D6 "GitHub Release sequence").
-PHASES: Tuple[str, ...] = ("draft", "promote")
+#: ``post-publish`` (0012 Story 04.0 Task 04) runs in its own ``contents: read``
+#: job with no credential: :mod:`post_publish_check` (threat model constraint 11).
+PHASES: Tuple[str, ...] = ("draft", "promote", "post-publish")
+#: Phases that must never see a credential (``stage.py`` refuses them when one is set).
+UNPRIVILEGED_PHASES: Tuple[str, ...] = ("post-publish",)
 
 #: Constant endpoints (RP-8): the token is sent only to these two bases.
 API_BASE = "https://api.github.com"
@@ -739,14 +743,35 @@ def dry_run_plan(inputs: pin.ReleaseInputs, repository: str, phase: Optional[str
         lines.append(f"info: dry run: would re-read the {len(inputs.assets)} assets, then PATCH "
                      f"the draft: draft false, make_latest {latest}; then dereference "
                      f"{inputs.tag} again")
+    if phase == "post-publish":
+        lines = []
+    if phase in (None, "post-publish"):
+        lines += [f"info: dry run: post-publish (no credential, contents: read): would GET "
+                  f"releases/tags/{inputs.tag} of {repository} anonymously and require it "
+                  f"published, prerelease {str(inputs.prerelease).lower()}, exactly "
+                  f"{len(inputs.assets)} assets with the manifest's names and sizes",
+                  f"info: dry run: post-publish: would dereference {inputs.tag} anonymously and "
+                  f"require {c12}",
+                  f"info: dry run: post-publish: would download each asset anonymously from "
+                  f"https://github.com/{repository}/releases/download/{inputs.tag}/<name>",
+                  "info: dry run: post-publish: redirects only to *.githubusercontent.com over "
+                  "HTTPS, each body cut off at its manifest size, every digest compared with "
+                  f"the out-of-band manifest {inputs.manifest.sha256[:16]}"]
     return lines
 
 
-def check_published(*_args: Any, **_kwargs: Any) -> None:
-    """D9 post-publish check: milestone 0012 Story 04.0 Task 04, not implemented here.
+def post_publish(inputs: pin.ReleaseInputs, repository: str, log: Log) -> str:
+    """The ``post-publish`` phase: the public release, checked as a consumer sees it (Task 04).
+
+    Delegates to :func:`post_publish_check.post_publish`, which holds no
+    credential and makes anonymous requests only (constraint 11, RP-7).
 
     Raises:
-        PublishError: Always.
+        post_publish_check.CheckError: The first discrepancy; not a rollback.
     """
-    raise PublishError("check_published: expected 0012 Story 04.0 Task 04 -> actual not "
-                       "implemented")
+    import post_publish_check
+    return post_publish_check.post_publish(inputs, repository, log)
+
+
+#: The ADR 0005 D9 name of the post-publish check.
+check_published = post_publish

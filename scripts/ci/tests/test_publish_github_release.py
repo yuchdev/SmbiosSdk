@@ -985,8 +985,8 @@ class StageGateTests(_FakeCase):
     """Type: integration (in-process stage). Each gate refuses before any request."""
 
     def test_VerifyGateFailsClosedWithoutAVerifyResult(self) -> None:
-        """ADR 0005 D6: no verify stage yet (Task 04), so publish must refuse."""
-        for verified, needle in (("", "no verify result (the verify stage is not defined yet"),
+        """ADR 0005 D6: without the same run's verify-gate result publish must refuse."""
+        for verified, needle in (("", "no verify result (every packaging leg must pass"),
                                  ("e" * 64, "verify passed for another manifest")):
             with self.subTest(verified=verified):
                 run = run_stage(self, ["--only", "draft"], CI_VERIFIED_MANIFEST_SHA256=verified)

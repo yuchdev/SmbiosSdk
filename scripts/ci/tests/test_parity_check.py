@@ -171,6 +171,14 @@ class ParityTest(_TreeCase):
         self.assertIn("C11: expected hard -> actual missing (stage-build.yml/build job timeout)",
                       self.report())
 
+    def test_ruled_job_may_exceed_c11_only_up_to_its_ruling(self) -> None:
+        """0012 Story 04.0 Task 04: the recorded 45-minute cold-build ruling, and no further."""
+        self.assertNotIn("C11", " ".join(self.report()))  # verify 57, registry-prepare 52
+        self.edit("stage-verify.yml", lambda t: t.replace("timeout-minutes: 57",
+                                                          "timeout-minutes: 58", 1))
+        self.assertIn("C11: expected hard -> actual missing (stage-verify.yml/verify job timeout)",
+                      self.report())
+
     def test_unpinned_action_breaks_c21(self) -> None:
         self.edit("stage-lint.yml", lambda t: re.sub(r"actions/checkout@[0-9a-f]{40}",
                                                      "actions/checkout@v7", t))

@@ -1,0 +1,37 @@
+# Violates P12 once (threat model 2026-11-18 constraint 11; 0012 Story 04.0
+# Task 04): the nightly release re-check job runs in an environment, which
+# could hand it environment secrets. Otherwise the compliant verify-stage fixture (policy gate P1-P15). Not a real workflow.
+name: stage-verify
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 5
+        with:
+          persist-credentials: false
+      - name: Verify
+        run: python3 scripts/ci/stage.py verify
+        timeout-minutes: 5
+  release-recheck:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 5
+        with:
+          persist-credentials: false
+      - name: Re-check releases
+        run: python3 scripts/ci/stage.py verify --only releases
+        timeout-minutes: 5

@@ -215,12 +215,13 @@ class InputValidationTests(unittest.TestCase):
                 self.assertEqual(leg.config, "Release")
                 self.assertIn(name, legs["stages"]["build"])
 
-    def test_UnknownAndUndefinedStagesExit2(self) -> None:
+    def test_UnknownStageExit2AndEveryStageIsDefined(self) -> None:
         self.assertUsage(run_stage_cli(self.tmp, ["deploy"]), "deploy")
-        # verify is 0012 Story 04.0 Task 04; publish is defined since Task 02.
-        proc = run_stage_cli(self.tmp, ["verify"])
+        # 0012 Story 04.0 Task 04 defined verify, the last SC1 stage.
+        self.assertEqual(set(stage.STAGES), set(stage.STEPS))
+        proc = run_stage_cli(self.tmp, ["verify", "--leg", "linux"])
         self.assertUsage(proc)
-        self.assertIn("not defined yet", proc.stderr)
+        self.assertIn("unknown leg for stage verify", proc.stderr)
 
     def test_PublishOnlyFlagsAreRejectedElsewhere(self) -> None:
         for args in (["lint", "--dry-run"], ["build", "--destination", "github-release"]):
@@ -449,9 +450,10 @@ class LegsDataTests(unittest.TestCase):
                     self.assertRegex(body.strip(),
                                      r"^python3? scripts/ci/stage\.py ((lint|build|test)"
                                      r"( --only [a-z-]+)?|summary( --job-failed)?"
-                                     r"|package( --only manifest)?|verify"
+                                     r"|package( --only manifest)?"
+                                     r"|verify --only (deps|artifact|gate|registry|releases)"
                                      r"|publish --destination [a-z0-9-]+ --only "
-                                     r"(preflight|draft|promote|prepare|branch))$")
+                                     r"(preflight|draft|promote|post-publish|prepare|branch))$")
 
 
 class BinaryCacheStateTests(unittest.TestCase):

@@ -26,9 +26,9 @@ are the threat model's standing constraints for implementers
   (``CI_BUILD_BINARY_CACHE``).
 - **ADR 0005 D6, publish only after verify in the same run.**
   :func:`check_verify_gate` requires ``CI_VERIFIED_MANIFEST_SHA256`` (the
-  verify stage's output) to equal the anchored digest. The verify stage is
-  0012 Story 04.0 Task 04 and does not exist yet, so today this gate always
-  refuses: publish fails closed.
+  verify stage's output, set by its ``verify-gate`` job only when every
+  packaging leg verified this manifest; 0012 Story 04.0 Task 04) to equal the
+  anchored digest. Empty or different, publish refuses.
 - **RP-10, no untrusted text in what is published.** Every manifest field is
   matched against a strict allowlist regex before :func:`release_body` uses
   it; an unknown key, a ``|``, a backtick or a link is refused.
@@ -360,16 +360,18 @@ def check_binary_cache(view: ManifestView, tier: str,
 def check_verify_gate(manifest_sha256: str, verified_sha256: str) -> None:
     """Require the same run's verify stage to have passed for exactly this manifest.
 
-    The verify stage is 0012 Story 04.0 Task 04. Until it exists nothing sets
-    ``CI_VERIFIED_MANIFEST_SHA256`` and this always refuses (fail closed).
+    ``CI_VERIFIED_MANIFEST_SHA256`` is set only by the verify stage's
+    ``verify-gate`` job (0012 Story 04.0 Task 04), which runs only when every
+    verify leg succeeded and itself requires every packaging leg to report
+    this digest. A skipped, cancelled or partly failed verify leaves it empty.
 
     Raises:
         PublishInputError: No verify result, or one for another manifest.
     """
     if not verified_sha256:
         raise PublishInputError(f"verify gate: expected verify passed for manifest "
-                                f"{manifest_sha256[:16]} -> actual no verify result (the verify "
-                                "stage is not defined yet: 0012 Story 04.0 Task 04)")
+                                f"{manifest_sha256[:16]} -> actual no verify result (every "
+                                "packaging leg must pass the same run's verify stage)")
     if verified_sha256 != manifest_sha256:
         raise PublishInputError(f"verify gate: expected {manifest_sha256[:16]} -> actual "
                                 f"{verified_sha256[:16] if HEX64.fullmatch(verified_sha256) else '<rejected>'}"

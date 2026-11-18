@@ -67,8 +67,22 @@ class SymbolTest(unittest.TestCase):
         with mock.patch.object(consumer_smoke, "_run", return_value="0000 T _smbios_open\n"):
             self.assertEqual(smoke.exported_symbols(Path("libsmbios_c.dylib")), ["smbios_open"])
 
-    def test_WindowsDllIsNotInspected(self) -> None:
-        self.assertIsNone(smoke.exported_symbols(Path("smbios_c.dll")))
+    def test_WindowsDllIsInspectedWithDumpbin(self) -> None:
+        """0012 Story 04.0 Task 04 replaced the old ``symbols=skipped`` for a ``.dll``."""
+        out = ("    ordinal hint RVA      name\n\n"
+               "          1    0 00001000 smbios_open\n\n  Summary\n")
+        with mock.patch.object(smoke.export_symbols.shutil, "which",
+                               return_value="C:/VS/dumpbin.exe"), \
+                mock.patch.object(consumer_smoke, "_run", return_value=out) as run:
+            self.assertEqual(smoke.exported_symbols(Path("smbios_c.dll")), ["smbios_open"])
+        self.assertEqual(run.call_args.args[1][:3], ["C:/VS/dumpbin.exe", "/nologo", "/exports"])
+
+    def test_DllWithoutDumpbinFailsInsteadOfSkipping(self) -> None:
+        with mock.patch.object(smoke.export_symbols.shutil, "which", return_value=None), \
+                mock.patch.object(smoke.export_symbols.os.path, "isfile", return_value=False):
+            with self.assertRaises(smoke.SmokeError) as cm:
+                smoke.exported_symbols(Path("smbios_c.dll"))
+        self.assertIn("dumpbin not found", str(cm.exception))
 
 
 class FindLibraryTest(unittest.TestCase):
