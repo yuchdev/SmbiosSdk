@@ -326,6 +326,67 @@ class CleanRoomTest(unittest.TestCase):
             self.assertIn(f"environment variable {name} points into", text)
             self.assertNotIn(value, text)
 
+    # -- PATH filtering (0012 Story 04.0 Task 04 follow-up; CI run 44285978968) ---------
+
+    #: The windows-2022 image: VCPKG_INSTALLATION_ROOT=C:\vcpkg, and C:\vcpkg on PATH.
+    WIN_REPO = Path("D:\\a\\SmbiosSdk\\SmbiosSdk")
+    WIN_ROOTS = [("this repository", WIN_REPO), ("the vcpkg root", Path("C:\\vcpkg"))]
+
+    def test_VcpkgRootOnPathIsFilteredInOrderAndCounted(self) -> None:
+        removed: dict = {}
+        path = os.pathsep.join(["/usr/bin", str(self.VCPKG), f"{self.VCPKG}/downloads/tools/x",
+                                "/opt/cmake/bin", "/bin"])
+        env = vra.clean_environment({"PATH": path}, self.roots(), removed)
+        self.assertEqual(env["PATH"], os.pathsep.join(["/usr/bin", "/opt/cmake/bin", "/bin"]))
+        self.assertEqual(removed, {"the vcpkg root": 2})
+
+    def test_WindowsShapedPathIsFilteredCaseBlind(self) -> None:
+        """The CI failure, reproduced with the runner's own shape: ';', backslashes, any case."""
+        removed: dict = {}
+        path = ";".join([r"C:\Program Files\Git\cmd", r"c:\VCPKG", r"D:\a\_temp\ci-tools\Scripts",
+                         r"C:\vcpkg\downloads\tools\ninja", r"C:\Windows\system32"])
+        env = vra.clean_environment({"Path": path}, self.WIN_ROOTS, removed, pathsep=";")
+        self.assertEqual(env["Path"], ";".join([r"C:\Program Files\Git\cmd",
+                                                r"D:\a\_temp\ci-tools\Scripts",
+                                                r"C:\Windows\system32"]))
+        self.assertEqual(removed, {"the vcpkg root": 2})
+        self.assertIsNone(vra.find_leak(r"C:\vcpkgx\bin", self.WIN_ROOTS))  # boundary-anchored
+
+    def test_RepositoryEntryOnPathStillFails(self) -> None:
+        """Never filtered: an entry under the checkout is our own defect, not image noise."""
+        for path, sep, roots in (
+                (os.pathsep.join([str(self.VCPKG), f"{self.REPO}/build/bin", "/usr/bin"]),
+                 os.pathsep, self.roots()),
+                (r"C:\vcpkg;D:\a\SmbiosSdk\SmbiosSdk\build\windows-x64\bin;C:\Windows", ";",
+                 self.WIN_ROOTS)):
+            with self.subTest(sep=sep), self.assertRaises(vra.VerifyError) as cm:
+                vra.clean_environment({"PATH": path}, roots, {}, pathsep=sep)
+            self.assertIn("environment variable PATH points into this repository", str(cm.exception))
+            self.assertNotIn("build", str(cm.exception))
+
+    def test_AssertionAfterFilteringIsStillLive(self) -> None:
+        """If filtering missed a vcpkg entry, the post-filter assertion fails the run."""
+        path = os.pathsep.join(["/usr/bin", str(self.VCPKG)])
+        with mock.patch.object(vra, "filter_path", side_effect=lambda v, r, s: (v, {})), \
+                self.assertRaises(vra.VerifyError) as cm:
+            vra.clean_environment({"PATH": path}, self.roots())
+        self.assertIn("environment variable PATH points into the vcpkg root", str(cm.exception))
+
+    def test_RunProceedsAndReportsTheFilteredEntries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = make_release(Path(tmp))
+            work = Path(tmp) / "work"
+            out = f"-I{work}/prefix/include -L{work}/prefix/lib -lsmbios_c\n"
+            environ = {"PATH": os.pathsep.join(["/usr/bin", "/home/u/.vcpkg"]),
+                       "VCPKG_INSTALLATION_ROOT": "/home/u/.vcpkg"}
+            with mock.patch.object(vra, "_which", return_value="pkg-config"), \
+                    mock.patch.object(vra.export_symbols, "host_os", return_value="windows"), \
+                    mock.patch("subprocess.run",
+                               return_value=mock.Mock(returncode=0, stdout=out)) as run:
+                lines = vra.run(archive, work, build=False, environ=environ)
+            self.assertNotIn("/home/u/.vcpkg", run.call_args.kwargs["env"]["PATH"])
+        self.assertIn("clean room: PATH -1 (the vcpkg root)", lines)
+
     def test_LeakedPathUnderAnUnlistedNameNeverReachesTheChild(self) -> None:
         env = vra.clean_environment({"PATH": "/usr/bin", "MY_SDK": str(self.REPO)}, self.roots())
         self.assertNotIn("MY_SDK", env)

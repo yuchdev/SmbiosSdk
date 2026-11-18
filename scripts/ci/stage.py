@@ -1696,14 +1696,17 @@ def _compact_verify_line(line: str) -> str:
     """
     m = re.fullmatch(r"(\d+) files, install_sha256 ok", line)
     if m:
-        return f"tree {m.group(1)} = install_sha256"
+        return f"tree {m.group(1)} = install"
     if line.startswith("c: smbios_open="):
         return "c: " + line[len("c: smbios_open="):]
     m = re.fullmatch(r"exports ok \((\d+) smbios_\* symbols\)", line)
     if m:
-        return f"exports {m.group(1)} smbios_*"
+        return f"exports {m.group(1)} ok"
     if line.startswith("exports NOT EXECUTED"):
         return "exports NOT EXECUTED"
+    m = re.fullmatch(r"clean room: PATH -(\d+) \(the vcpkg root\)", line)
+    if m:
+        return f"PATH -{m.group(1)} vcpkg"
     if line.startswith("cxx: "):
         return line.split(" ", 2)[0] + " " + line.split(" ")[1]
     return line

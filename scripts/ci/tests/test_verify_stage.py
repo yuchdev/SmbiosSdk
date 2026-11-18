@@ -114,7 +114,8 @@ class _DistCase(unittest.TestCase):
         with mock.patch.object(vra, "host_leg", return_value=host or leg), \
                 mock.patch.object(vra, "run", side_effect=self.fake_run(fail)), \
                 mock.patch.object(msvc_env, "developer_environment",
-                                  return_value=dict(os.environ, INCLUDE="i", LIB="l")):
+                                  return_value=dict(os.environ, INCLUDE="i", LIB="l",
+                                                    PATH="C:\\VS\\bin;C:\\vcpkg")):
             return run_verify(self.tmp, ["--only", "artifact"], leg, self.anchor, **extra)
 
 
@@ -126,7 +127,7 @@ class ArtifactStepTests(_DistCase):
         self.assertEqual(rc, 0, text)
         self.assertEqual(outputs, {"verified_macos_arm64": self.anchor})
         self.assertIn(f"ok: verify macos-arm64: 7 files = manifest {self.anchor[:12]}; tree 78 "
-                      "= install_sha256; pkg-config ok; exports 12 smbios_*; c: no-table; "
+                      "= install; pkg-config ok; exports 12 ok; c: no-table; "
                       "cxx: formatters=4 (", text)
         (call,) = self.calls
         self.assertTrue(call["build"])
@@ -204,6 +205,9 @@ class ArtifactStepTests(_DistCase):
         rc, text, outputs = self.artifact(leg="windows-x64")
         self.assertEqual(rc, 0, text)
         self.assertEqual(self.calls[0]["environ"].get("INCLUDE"), "i")
+        # Ordering pin: the step hands the verifier the CAPTURED environment unfiltered
+        # (vcvars output, vcpkg entry included); the verifier filters it (its own tests).
+        self.assertIn("vcpkg", self.calls[0]["environ"].get("PATH", ""))
         self.assertEqual(outputs, {"verified_windows_x64": self.anchor})
 
 
@@ -220,7 +224,8 @@ class CompactSummaryTests(unittest.TestCase):
                 self.assertTrue("NOT EXECUTED" in out or "--define-prefix" in out, out)
 
     def test_FullRunFitsTheSummaryCap(self) -> None:
-        lines = ["78 files, install_sha256 ok", "pkg-config ok", "exports ok (13 smbios_* symbols)",
+        lines = ["clean room: PATH -2 (the vcpkg root)",
+                 "78 files, install_sha256 ok", "pkg-config ok", "exports ok (13 smbios_* symbols)",
                  "c: smbios_open=ok structures=32",
                  "cxx: formatters=4 type17=Memory Device fields=15"]
         summary = (f"7 files = manifest {'a' * 12}; "
@@ -520,6 +525,43 @@ class MsvcEnvTests(unittest.TestCase):
             env = msvc_env.developer_environment(run, base={"A": "1"})
         self.assertEqual(env, {"A": "1", "INCLUDE": "x", "LIB": "y", "PATH": "z"})
         self.assertIn('vcvars64.bat" >nul 2>&1 && set"', str(commands[1]))
+
+    def test_VcvarsPathReplacesTheInheritedPathCaseBlind(self) -> None:
+        """``set`` prints ``Path``; the inherited ``PATH`` must not survive beside it."""
+        def run(command: object) -> str:
+            if isinstance(command, list):
+                return "C:\\VS\n"
+            return "Path=C:\\VS\\bin;C:\\vcpkg\nINCLUDE=x\nLIB=y\n"
+        with mock.patch("os.path.isfile", return_value=True):
+            env = msvc_env.developer_environment(run, base={"PATH": "C:\\vcpkg;C:\\old"})
+        self.assertEqual([k for k in env if k.upper() == "PATH"], ["PATH"])
+        self.assertEqual(env["PATH"], "C:\\VS\\bin;C:\\vcpkg")  # vcvars' value, not the old one
+        self.assertTrue(env["PATH"].startswith("C:\\VS"))  # what _which/find_dumpbin read
+
+    def test_WindowsOrderingCaptureThenFilter(self) -> None:
+        """CI run 44285978968: vcvars re-exports the image's C:\\vcpkg (and adds VS's own
+        vcpkg); filtering must run on the captured environment, i.e. inside
+        ``verify_release_artifact.run``, never before the capture."""
+        captured_path = r"C:\VS\VC\Tools\bin;C:\VS\VC\vcpkg;C:\vcpkg;C:\Windows"
+
+        def run(command: object) -> str:
+            if isinstance(command, list):
+                return "C:\\VS\n"
+            return (f"Path={captured_path}\nINCLUDE=x\nLIB=y\n"
+                    "VCPKG_ROOT=C:\\VS\\VC\\vcpkg\nVCPKG_INSTALLATION_ROOT=C:\\vcpkg\n")
+        with mock.patch("os.path.isfile", return_value=True):
+            env = msvc_env.developer_environment(run, base={"PATH": r"C:\vcpkg;C:\Windows"})
+        # 1. The capture hands the vcpkg entries back (so filtering earlier would be undone).
+        self.assertIn(r"C:\vcpkg", env["PATH"])
+        # 2. The verifier filters what it is given: both vcpkg roots of the captured env.
+        roots = [("this repository", Path(r"D:\a\SmbiosSdk\SmbiosSdk")),
+                 ("the vcpkg root", Path(env["VCPKG_INSTALLATION_ROOT"])),
+                 ("the vcpkg root", Path(env["VCPKG_ROOT"]))]
+        removed: Dict[str, int] = {}
+        child = vra.clean_environment(env, roots, removed, pathsep=";")
+        self.assertEqual(child["PATH"], r"C:\VS\VC\Tools\bin;C:\Windows")
+        self.assertEqual(removed, {"the vcpkg root": 2})
+        self.assertNotIn("VCPKG_ROOT", child)
 
     def test_UnsafeOrMissingInstallationIsRefused(self) -> None:
         for out in ("", "C:\\VS & calc\n", "C:\\VS\"\n", "/usr/VS\n"):

@@ -312,3 +312,26 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
   2. **Separate finding: a latent flake from milestone 0014, not caused by Task 04.** `test_cli_format_check.StubCheckerTests.test_UnknownFailReasonIsReplacedByAFixedOne` failed because `assertNothingLeaked` scanned for `"999"` in output that contains the github reporter's fence token, `::stop-commands::<secrets.token_hex(16)>`. 32 random hex characters contain a given 3-digit string with probability about 30/4096 = **0.73% per run (about 1 in 137)**; CI drew `...6e9999cf...`. It had been latent since 0014's reporter fences.
 
      **Fix:** the helper masks exactly the fence tokens the output opened, in both markers, before scanning, so the needle can never collide with a nonce while a real leak anywhere else is still caught. Regression tests force a token containing `999` (the CI one), and show that a real `999` outside the fence, a token that was not opened, and a needle before the fence are all still caught. An audit found no other needle with real collision odds (canary slices are 16 hex characters, about 10^-18).
+
+- **2026-11-18 Story 04.0 Task 04 follow-up: CI run 44285978968 (`bb10284`).** `verify (linux-x64)` and `verify (macos-arm64)` are **green on real runners**. The cold Windows Boost build took 204.6 s against its 45-minute budget. `verify (windows-x64)` failed in 2.2 s, correctly, on the clean-room guard: `clean room: environment variable PATH points into the vcpkg root`. The windows-2022 image sets `VCPKG_INSTALLATION_ROOT=C:\vcpkg` **and puts it on `PATH`**; the Linux and macOS images do not put it on `PATH`.
+
+  **Fix (not committed): filter `PATH`, then assert.**
+  - `verify_release_artifact.clean_environment` removes, entry by entry and in order, every `PATH` entry under a vcpkg root.
+  - It then applies the unchanged assertion to every surviving variable, so a forbidden value that survives filtering still fails.
+  - An entry under **this repository** is never filtered and still fails: it is our own defect, not image noise.
+  - The run reports what it removed without values: `clean room: PATH -1 (the vcpkg root)`, shown as `PATH -1 vcpkg` in the `ok:` line.
+  - Filtering happens inside the verifier, on the environment the step captured after `vcvars64.bat`. vcvars re-exports `C:\vcpkg` and adds Visual Studio's bundled vcpkg, whose `VCPKG_ROOT` becomes a forbidden root too because the roots are computed from the captured environment.
+
+  Shown end to end on this host: with `$VCPKG_ROOT` prepended to `PATH`, the previous verifier printed CI's exact message, and the new one passes with `PATH -1 vcpkg`. With a repository directory on `PATH` it still fails.
+
+  **A second Windows defect found while checking the tool lookups, fixed before it could fail.**
+  - `set` prints `Path`, and every lookup reads `env.get("PATH")`: `cl`, `cmake` and `pkg-config` through `_which`, `dumpbin`, and the run-time `PATH` prepend.
+  - The old merge kept both the inherited `PATH` (without `cl`) and vcvars' `Path`, so the lookups read the pre-vcvars value.
+  - `msvc_env.developer_environment` now upper-cases the captured names (as Python's `os.environ` does on Windows) and lets them replace the inherited ones.
+
+  **No needed tool lives under `C:\vcpkg`.**
+  - `cl` and `dumpbin` come from Visual Studio via `vswhere`.
+  - `cmake`, `ninja` and the pinned `pkgconf` come from the job venv under `runner.temp`.
+  - The Boost prefix and the vcpkg that builds it are both under `runner.temp`; that vcpkg is bootstrapped by `bootstrap_vcpkg.py`, never the image's.
+
+  **Unverified until the next Windows run:** whether vcvars also puts a vcpkg path into `INCLUDE`/`LIB`. If it does, the guard fails loudly, naming the variable; it is not filtered silently.

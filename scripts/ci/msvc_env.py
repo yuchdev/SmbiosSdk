@@ -104,6 +104,13 @@ def developer_environment(run: Runner = _run, vswhere: str = VSWHERE,
     env = parse_set_output(run(command))
     if not env.get("INCLUDE") or not env.get("LIB"):
         raise MsvcError("msvc environment: vcvars64.bat set no INCLUDE/LIB")
-    merged = dict(os.environ if base is None else base)
-    merged.update(env)
+    # Windows names are case-insensitive and Python's os.environ upper-cases them;
+    # ``set`` prints ``Path``. Upper-case the captured names and let them replace the
+    # inherited ones: otherwise the child gets both ``PATH`` and ``Path``, and every
+    # ``env.get("PATH")`` lookup (cl, cmake, pkg-config, dumpbin) reads the
+    # pre-vcvars value, or nothing.
+    captured = {k.upper(): v for k, v in env.items()}
+    merged = {k.upper(): v for k, v in (os.environ if base is None else base).items()
+              if k.upper() not in captured}
+    merged.update(captured)
     return merged

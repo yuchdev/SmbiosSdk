@@ -352,6 +352,20 @@ cannot read the format). `parse_nm` now drops ELF `@@<node>` version suffixes. T
 hit a latent 0014 flake (a `999` needle against a random fence nonce). Both are recorded in
 `status.md` (2026-11-18 follow-up entry).
 
+### CI follow-up (run 44285978968, 2026-11-18): first real verify run
+
+`verify (linux-x64)` and `verify (macos-arm64)` passed on hosted runners. The cold Windows Boost
+`deps` step took 204.6 s. `verify (windows-x64)` was stopped by the clean-room guard: the
+windows-2022 image puts `C:\vcpkg` (`VCPKG_INSTALLATION_ROOT`) on `PATH`. The fix:
+
+- The verifier now **filters** `PATH` entries under a vcpkg root, on the environment captured
+  after `vcvars64.bat`, and reports the count.
+- It then asserts every surviving variable as before. A repository entry is still a failure.
+- `msvc_env.py` upper-cases the captured names, so `Path` from `set` replaces the inherited
+  `PATH` that every tool lookup reads.
+
+Details are in `status.md`. **Story 03.0 criterion 1** now needs only the Windows leg green.
+
 ### Gates (local, macOS, 2026-11-18)
 
 - **`stage.py lint --reporter plain`**: 8/8 green, exit 0 (final tree), including

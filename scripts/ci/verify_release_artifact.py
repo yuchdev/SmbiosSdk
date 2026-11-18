@@ -223,17 +223,62 @@ def _inside(path: Path, roots: Sequence[Tuple[str, Path]]) -> Optional[str]:
     return find_leak(os.path.realpath(path), roots) or find_leak(str(path), roots)
 
 
-def clean_environment(environ: Mapping[str, str],
-                      roots: Sequence[Tuple[str, Path]]) -> Dict[str, str]:
-    """Return the child environment: allowlisted names only, then asserted leak-free.
+#: Forbidden-root labels whose ``PATH`` entries are **removed** rather than failed: a hosted
+#: image may put its own vcpkg on ``PATH`` (``windows-2022`` puts ``C:\vcpkg`` there; CI run
+#: 44285978968), and ``vcvars64.bat`` adds Visual Studio's bundled vcpkg. Entries under
+#: this repository are never filtered: one there is our own defect and still fails.
+FILTERED_PATH_ROOTS: Tuple[str, ...] = ("the vcpkg root",)
+
+
+def filter_path(value: str, roots: Sequence[Tuple[str, Path]],
+                pathsep: str = os.pathsep) -> Tuple[str, Dict[str, int]]:
+    """Drop ``PATH`` entries under a :data:`FILTERED_PATH_ROOTS` root, keeping the rest in order.
+
+    Returns:
+        ``(filtered value, {root label: entries removed})``. An entry under this
+        repository is kept on purpose, so the assertion in :func:`clean_environment`
+        rejects it.
+    """
+    kept: List[str] = []
+    removed: Dict[str, int] = {}
+    for entry in value.split(pathsep):
+        leak = None
+        if entry:
+            leak = find_leak(entry, roots)
+            if leak is None and os.path.isabs(entry):
+                leak = find_leak(os.path.realpath(entry), roots)
+        if leak in FILTERED_PATH_ROOTS:
+            removed[leak] = removed.get(leak, 0) + 1
+            continue
+        kept.append(entry)
+    return pathsep.join(kept), removed
+
+
+def clean_environment(environ: Mapping[str, str], roots: Sequence[Tuple[str, Path]],
+                      removed: Optional[Dict[str, int]] = None,
+                      pathsep: str = os.pathsep) -> Dict[str, str]:
+    """Return the child environment: allowlisted names only, ``PATH`` filtered, then asserted.
+
+    ``PATH`` (any case: ``Path`` on Windows) cannot be dropped - the compiler,
+    cmake and ``pkg-config`` are found through it - so its entries under a vcpkg
+    root are removed (:func:`filter_path`; the counts go to ``removed``), and
+    then, as for every other surviving variable, **any** remaining mention of a
+    forbidden root fails. Filtering therefore only narrows what reaches the
+    child; it never lets a forbidden value through.
 
     Raises:
         VerifyError: An allowlisted variable that survived (``PATH``, ``CC``,
-            ``INCLUDE``...) still mentions a forbidden root. The message names
-            the variable and the tree, never the value.
+            ``INCLUDE``...) still mentions a forbidden root - for ``PATH``, an
+            entry under this repository. The message names the variable and the
+            tree, never the value.
     """
     env = child_environment({k: v for k, v in environ.items()
                              if _allowed(k) and not _denied(k)})
+    for name in [k for k in env if k.upper() == "PATH"]:
+        env[name], counts = filter_path(env[name], roots, pathsep)
+        if removed is not None:
+            for label, n in counts.items():
+                removed[label] = removed.get(label, 0) + n
     for name, value in sorted(env.items()):
         leak = find_leak(value, roots)
         if leak is not None:
@@ -842,10 +887,17 @@ def run(archive: Path, work_dir: Path, *, manifest: Optional[Path] = None, build
         leak = _inside(path, roots)
         if leak is not None:
             raise VerifyError(f"clean room: the {what} is inside {leak}")
-    env = clean_environment(environ, roots)
+    # Computed from ``environ`` as the caller captured it (on Windows after
+    # vcvars64.bat, so Visual Studio's bundled vcpkg is a forbidden root too) and
+    # filtered here, after that capture: a PATH entry re-exported by vcvars is removed.
+    removed: Dict[str, int] = {}
+    env = clean_environment(environ, roots, removed)
 
     entry = verify_digests(archive, manifest, version, leg)
     lines = [f"{leg} {version}", "sha256 ok"]
+    if removed:
+        lines.append("clean room: PATH " + ", ".join(
+            f"-{n} ({label})" for label, n in sorted(removed.items())))
 
     if work_dir.is_symlink():
         raise VerifyError("scratch path is a symlink")
