@@ -292,3 +292,23 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
   - the ledger's protection (S-1/S-2).
 
   **Gates (local, macOS):** see the Task 04 record.
+
+- **2026-11-18 Story 04.0 Task 04 follow-up: CI run 44279425448 (`d34d214`) failed in `lint`, 1 error + 1 failure in `scripts/ci tests`.** Both reproduce only on Linux. The local macOS 8/8 could not see them. Fixed, not committed.
+
+  1. **Task 04 regression: a host-dependent test, not a leaking symbol.** `test_LayoutModeReportsBuildChecksAsNotExecuted` used one `subprocess.run` fake for every command. Check 6 (the export allowlist) runs in layout-only mode whenever the host can read the archive's format.
+     - On Linux (host OS = the `linux-x64` leg's OS), `nm -D` therefore received pkg-config's text, and its last token `-lsmbios_c` looked like a stray export.
+     - On macOS the check reported `NOT EXECUTED`, so the test passed.
+     - Reproduced here by pinning the host OS, which showed the exact error, and by a spy that showed `nm` was handed `['-lsmbios_c']`. The fixture library is a 19-byte text stub that nothing read.
+
+     **No real leak.** The genuine CI-built `libsmbios_c.so` from run 44253023273 (`6887363`, sidecar verified) was inspected two ways, a stdlib `.dynsym` parser and `nm -D`. It defines exactly 13 `smbios_*` functions plus the version node `SMBIOS_C_1.0`, all GLOBAL/DEFAULT. `smbios_c.version` holds on Linux, and the real export check passes on it.
+
+     **Decision: check 6 stays in layout-only mode.** It is a static inspection (`nm`/`dumpbin` read, never execute). Where the host has no tool for the format it already says `exports NOT EXECUTED`, never a silent skip.
+
+     **Changes:**
+     - The test now pins the host OS and routes each tool by argv.
+     - New tests cover both branches, a real leaked symbol, and a real `nm` that must **fail** (not pass or skip) on the stub.
+     - The three affected suites pass under simulated linux, macos and windows hosts (116 each).
+     - Also from this inspection: GNU binutils/llvm `nm -D` print `smbios_open@@SMBIOS_C_1.0`. `parse_nm` now drops the version suffix so the allowlist sees exact names; the result was already a pass.
+  2. **Separate finding: a latent flake from milestone 0014, not caused by Task 04.** `test_cli_format_check.StubCheckerTests.test_UnknownFailReasonIsReplacedByAFixedOne` failed because `assertNothingLeaked` scanned for `"999"` in output that contains the github reporter's fence token, `::stop-commands::<secrets.token_hex(16)>`. 32 random hex characters contain a given 3-digit string with probability about 30/4096 = **0.73% per run (about 1 in 137)**; CI drew `...6e9999cf...`. It had been latent since 0014's reporter fences.
+
+     **Fix:** the helper masks exactly the fence tokens the output opened, in both markers, before scanning, so the needle can never collide with a nonce while a real leak anywhere else is still caught. Regression tests force a token containing `999` (the CI one), and show that a real `999` outside the fence, a token that was not opened, and a needle before the fence are all still caught. An audit found no other needle with real collision odds (canary slices are 16 hex characters, about 10^-18).

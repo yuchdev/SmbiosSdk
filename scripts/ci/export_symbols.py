@@ -77,8 +77,17 @@ def find_dumpbin(environ: Mapping[str, str], *, run: Optional[Runner] = None,
 
 
 def parse_nm(output: str, kind: str) -> List[str]:
-    """Symbol names from ``nm`` output (``<addr> <type> <name>`` lines)."""
+    """Symbol names from ``nm`` output (``<addr> <type> <name>`` lines).
+
+    An ELF symbol bound to a version node prints as ``name@@NODE`` (default
+    version) or ``name@NODE`` with GNU binutils >= 2.35 and llvm-nm; the
+    suffix is dropped so the allowlist sees the bare name. Measured on the CI
+    ``libsmbios_c.so`` of run 44253023273: every export is
+    ``smbios_*@@SMBIOS_C_1.0`` plus the node ``SMBIOS_C_1.0`` itself.
+    """
     names = [line.split()[-1] for line in output.splitlines() if line.strip()]
+    if kind == ".so":
+        return [n.split("@", 1)[0] or n for n in names]
     return [n[1:] if kind == ".dylib" and n.startswith("_") else n for n in names]
 
 

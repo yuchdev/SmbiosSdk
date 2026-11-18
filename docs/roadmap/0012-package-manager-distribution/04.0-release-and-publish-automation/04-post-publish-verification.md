@@ -343,6 +343,15 @@ with the three `ok: verify <leg>` lines recorded there.
   applied. A history lint like the registry's is a candidate follow-up.
 - **Story 03.0 criterion 1**: see above.
 
+### CI follow-up (run 44279425448, 2026-11-18)
+
+The first CI run of this task failed in `lint` on a host-dependent test of check 6. It was not a
+real export. The real CI Linux `.so` exports exactly 13 `smbios_*` functions and its version
+node. Check 6 stays in layout-only mode (a static read, reported `NOT EXECUTED` where the host
+cannot read the format). `parse_nm` now drops ELF `@@<node>` version suffixes. The same run also
+hit a latent 0014 flake (a `999` needle against a random fence nonce). Both are recorded in
+`status.md` (2026-11-18 follow-up entry).
+
 ### Gates (local, macOS, 2026-11-18)
 
 - **`stage.py lint --reporter plain`**: 8/8 green, exit 0 (final tree), including

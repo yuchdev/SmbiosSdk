@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import os
 import re
+import shutil
 import stat
 import tarfile
 import tempfile
@@ -27,6 +28,17 @@ import verify_release_artifact as vra  # noqa: E402
 
 LEG = "linux-x64"
 VERSION = "1.2.3"
+
+
+#: ``nm -D --defined-only`` of the real CI ``libsmbios_c.so`` (run 44253023273, ``6887363``),
+#: version suffixes included, exactly as GNU binutils/llvm-nm print them.
+NM_LINUX_REAL = "".join(
+    f"0000000000000000 {'A' if n == 'SMBIOS_C_1.0' else 'T'} {n}@@SMBIOS_C_1.0\n"
+    for n in ("SMBIOS_C_1.0", "smbios_bios_vendor", "smbios_bios_version", "smbios_close",
+              "smbios_entry_at", "smbios_entry_count", "smbios_entry_handle_id",
+              "smbios_entry_length", "smbios_entry_render", "smbios_entry_type",
+              "smbios_memory_device_size", "smbios_memory_device_speed", "smbios_open",
+              "smbios_system_uuid"))
 
 
 def make_tree(root: Path, os_name: str = "linux", skip: str = "") -> Path:
@@ -594,21 +606,64 @@ class CxxConsumerTest(unittest.TestCase):
 class RunTest(unittest.TestCase):
     """The ``run()`` record and the checks it refuses before touching anything."""
 
-    def test_LayoutModeReportsBuildChecksAsNotExecuted(self) -> None:
+    def _layout_run(self, host_os: str, nm_out: str = "") -> List[str]:
+        """``run(build=False)`` with the host OS pinned (it decides check 6), tools faked by argv.
+
+        The CI-run 44279425448 regression: this test used one fake for every
+        command, so on a Linux host (host OS == the leg's OS) ``nm -D`` received
+        pkg-config's text and its last token ``-lsmbios_c`` looked like a stray
+        export; on macOS the check was not executed at all. The host is now an
+        input, and each tool answers only its own argv.
+        """
         out = "-I{p}/include -L{p}/lib -lsmbios_c\n"
         with tempfile.TemporaryDirectory() as tmp:
             archive = make_release(Path(tmp))
             work = Path(tmp) / "work"
 
             def fake(argv, **_kw):
-                return mock.Mock(returncode=0, stdout=out.format(p=work / "prefix"))
+                if argv[0] == "pkg-config":
+                    return mock.Mock(returncode=0, stdout=out.format(p=work / "prefix"))
+                if argv[0] == "/usr/bin/nm":
+                    self.assertEqual(argv[1:3], ["-D", "--defined-only"])
+                    return mock.Mock(returncode=0, stdout=nm_out)
+                raise AssertionError(f"unexpected command in layout mode: {argv[0]}")
             with mock.patch.object(vra, "_which", return_value="pkg-config"), \
+                    mock.patch.object(vra.export_symbols, "host_os", return_value=host_os), \
+                    mock.patch.object(vra.export_symbols.shutil, "which",
+                                      return_value="/usr/bin/nm"), \
                     mock.patch("subprocess.run", side_effect=fake):
-                lines = vra.run(archive, work, build=False, environ={"PATH": "/usr/bin"})
-        self.assertEqual(lines[0], f"{LEG} {VERSION}")
-        self.assertIn("sha256 ok", lines)
-        self.assertIn("pkg-config ok", lines)
-        self.assertTrue(lines[-1].startswith("build/run NOT EXECUTED"))
+                return vra.run(archive, work, build=False, environ={"PATH": "/usr/bin"})
+
+    def test_LayoutModeReportsBuildChecksAsNotExecuted(self) -> None:
+        for host_os in ("linux", "macos", "windows"):
+            with self.subTest(host_os=host_os):
+                lines = self._layout_run(host_os, NM_LINUX_REAL)
+                self.assertEqual(lines[0], f"{LEG} {VERSION}")
+                self.assertIn("sha256 ok", lines)
+                self.assertIn("pkg-config ok", lines)
+                self.assertTrue(lines[-1].startswith("build/run NOT EXECUTED"))
+
+    def test_LayoutModeRunsTheExportCheckOnlyWhereTheHostCanReadTheFormat(self) -> None:
+        """Check 6 is static (nm reads, never executes): run it or say NOT EXECUTED, never skip."""
+        self.assertIn("exports ok (14 smbios_* symbols)", self._layout_run("linux", NM_LINUX_REAL))
+        for host_os in ("macos", "windows"):
+            with self.subTest(host_os=host_os):
+                lines = self._layout_run(host_os)
+                self.assertTrue(any(x.startswith("exports NOT EXECUTED") for x in lines), lines)
+        with self.assertRaises(vra.VerifyError) as cm:
+            self._layout_run("linux", NM_LINUX_REAL + "000000000011f000 T leaked_helper\n")
+        self.assertIn("1 exported symbol(s) outside smbios_*", str(cm.exception))
+
+    @unittest.skipUnless(shutil.which("nm"), "needs a real nm (present on every CI runner)")
+    def test_ExportCheckFailsOnAStubThatIsNotALibrary(self) -> None:
+        """The synthetic fixtures are text stubs: a real nm must FAIL on them, never pass or skip."""
+        with tempfile.TemporaryDirectory() as tmp:
+            prefix = make_tree(Path(tmp) / "prefix", "linux")
+            env = {"PATH": os.environ.get("PATH", "")}
+            with mock.patch.object(vra.export_symbols, "host_os", return_value="linux"):
+                with self.assertRaises(vra.VerifyError) as cm:
+                    vra.check_exports(prefix, "linux", env)
+        self.assertRegex(str(cm.exception), r"^symbols (failed|could not start)")
 
     def test_FullModeRunsEveryCheckOnAMatchingHost(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

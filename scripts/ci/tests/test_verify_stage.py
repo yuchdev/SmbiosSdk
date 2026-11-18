@@ -462,6 +462,12 @@ class ExportSymbolsTests(unittest.TestCase):
                          ["smbios_open"])
         self.assertEqual(export_symbols.parse_nm("0000 T smbios_open\n0 A SMBIOS_C_1\n", ".so"),
                          ["smbios_open", "SMBIOS_C_1"])
+        # GNU binutils >= 2.35 / llvm-nm print versioned ELF names (CI run 44253023273's .so).
+        self.assertEqual(export_symbols.parse_nm(
+            "0 A SMBIOS_C_1.0@@SMBIOS_C_1.0\n1 T smbios_open@@SMBIOS_C_1.0\n"
+            "2 T leaked@SMBIOS_C_1.0\n", ".so"), ["SMBIOS_C_1.0", "smbios_open", "leaked"])
+        with self.assertRaises(export_symbols.ExportError):
+            export_symbols.check_symbols(["smbios_open", "leaked"])
         with self.assertRaises(export_symbols.ExportError):
             export_symbols.parse_dumpbin("Dump of file x.dll\n")
 

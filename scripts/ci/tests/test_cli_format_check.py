@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,6 +36,15 @@ from reporters import get_reporter  # noqa: E402
 
 POSIX_ONLY = "the stub CLI is a /bin/sh trampoline (POSIX only)"
 SERIAL = "TEST-SERIAL-0000"
+_FENCE_OPEN = re.compile(r"::stop-commands::([0-9a-f]{32})(?![0-9a-f])")
+
+
+def mask_fence_tokens(text: str) -> str:
+    """Replace each opened fence token (and only those) with ``<nonce>`` in both its markers."""
+    for token in set(_FENCE_OPEN.findall(text)):
+        text = text.replace(f"::stop-commands::{token}", "::stop-commands::<nonce>")
+        text = text.replace(f"::{token}::", "::<nonce>::")
+    return text
 
 #: Stub ``smbios`` CLI. STUB_COUNT structures; STUB_NOFLAG_DIFF makes the
 #: no-flag output differ from --format text. Every document carries the fake
@@ -97,9 +107,19 @@ class _Base(unittest.TestCase):
         return rc, text.splitlines(), records
 
     def assertNothingLeaked(self, text: str, records: str) -> None:
+        """No hostile value in the output or the records - outside the reporter's fence nonces.
+
+        The github reporter fences untrusted excerpts with ``::stop-commands::<token>`` ...
+        ``::<token>::``, the token a fresh ``secrets.token_hex(16)``. 32 random hex
+        characters contain a given 3-digit needle such as ``999`` with probability about
+        30/4096 = 0.73% (1 run in ~137): the latent flake that failed CI run
+        44279425448. Exactly the tokens this output opened are masked, in both of
+        their markers, before scanning; anything else, including a needle elsewhere
+        on a fence line, is still scanned.
+        """
         for needle in (SERIAL, "::error::", "pwned", "999"):
-            self.assertNotIn(needle, text)
-            self.assertNotIn(needle, records)
+            self.assertNotIn(needle, mask_fence_tokens(text))
+            self.assertNotIn(needle, mask_fence_tokens(records))
 
 
 @unittest.skipIf(os.name == "nt", POSIX_ONLY)
@@ -229,6 +249,29 @@ class StubCheckerTests(_Base):
         self.assertEqual(rc, 1)
         self.assertIn("smbios --format text: check failed (exit 1)", lines[0])
         self.assertNothingLeaked("\n".join(lines), records)
+
+    def test_LeakCheckIgnoresANonceThatContainsTheNeedle(self) -> None:
+        """Regression (CI run 44279425448): force the fence token to contain ``999``."""
+        self.install_cli()
+        stub = self.checker("sys.stderr.write('FAIL: TEST-SERIAL-0000 ::error::x\\n')\n"
+                            "sys.exit(1)\n")
+        token = "b3d5cefbf4d867344b4eef6e9999cf80"  # the nonce that collided on CI, padded
+        with mock.patch.object(cfc, "CHECK_SCRIPT", stub), \
+                mock.patch("secrets.token_hex", return_value=token):
+            rc, lines, records = self.run_check()
+        text = "\n".join(lines)
+        self.assertEqual(rc, 1)
+        self.assertIn(f"::stop-commands::{token}", text)  # the collision really happened
+        self.assertIn("999", text)
+        self.assertNothingLeaked(text, records)          # and the helper no longer trips on it
+
+    def test_LeakCheckStillCatchesARealLeakNextToANonce(self) -> None:
+        token = "0" * 29 + "999"
+        for text in (f"::stop-commands::{token}\nok: json, 999 structures\n::{token}::",
+                     f"::stop-commands::{token}999\n::{token}999::",  # not the opened token
+                     f"x 999 ::stop-commands::{token}\n::{token}::"):
+            with self.subTest(text=text), self.assertRaises(AssertionError):
+                self.assertNothingLeaked(text, "")
 
     def test_KnownFailReasonIsShown(self) -> None:
         self.install_cli()
