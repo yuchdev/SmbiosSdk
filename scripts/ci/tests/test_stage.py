@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import ast
 import json
 import os
 import re
@@ -31,6 +32,7 @@ from unittest import mock
 from ci_test_support import CI_DIR, neutral_env, path_with, write_stub
 
 import check_workflow_policy as gate  # noqa: E402
+import ci_patterns  # noqa: E402
 import stage  # noqa: E402
 from reporters import get_reporter  # noqa: E402
 
@@ -394,6 +396,43 @@ class TierTests(unittest.TestCase):
                         for leg in planned:
                             self.assertTrue(stage.leg_selected(leg, event, github["ref"],
                                                                self.legs))
+
+
+class PatternSetNameTests(unittest.TestCase):
+    """Every ``patterns=`` argument names a registered ci_patterns set.
+
+    ``ci_patterns.compile_sets`` looks its arguments up as set *names* and raises
+    ``KeyError`` on an unknown one, which ``stage.py`` reports only as
+    "internal error (KeyError)". A literal regex there therefore crashes the
+    step rather than failing it, and the crash reaches no test that does not
+    execute that exact step: ``step_deps`` skips on a local run, so run
+    44282523147 was the first to execute it and all three verify legs died.
+    This scans the call sites statically so no step has to run.
+    """
+
+    valid = set(ci_patterns.PATTERN_SETS)
+
+    def test_EveryPatternsArgumentNamesARegisteredSet(self) -> None:
+        offenders = []
+        for path in sorted(CI_DIR.glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                for kw in node.keywords:
+                    if kw.arg != "patterns" or not isinstance(kw.value, ast.List):
+                        continue
+                    for element in kw.value.elts:
+                        if (isinstance(element, ast.Constant)
+                                and isinstance(element.value, str)
+                                and element.value not in self.valid):
+                            offenders.append(f"{path.name}:{element.lineno} {element.value!r}")
+        self.assertEqual(offenders, [], "unregistered ci_patterns set name(s); "
+                                        f"valid names are {sorted(self.valid)}")
+
+    def test_CompileSetsStillRejectsAnUnknownName(self) -> None:
+        with self.assertRaises(KeyError):
+            ci_patterns.compile_sets(["error:"])
 
 
 class LegsDataTests(unittest.TestCase):

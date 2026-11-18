@@ -1566,7 +1566,10 @@ def step_deps(ctx: Context) -> int:
         prefix = verify_deps.installed_prefix(ctx.temp_dir, ctx.leg.name)
     except verify_deps.DepsError as exc:
         return ctx.fail(label, str(exc), start)
-    rc = ctx.run("boost dependency prefix", argv, patterns=["error:", "CMake Error"],
+    # patterns= takes ci_patterns set *names*, never literal regexes: compile_sets()
+    # raises KeyError on an unknown name, which surfaced only on CI because this
+    # step skips on a local run (0012 Story 04.0 Task 04, run 44282523147).
+    rc = ctx.run("boost dependency prefix", argv, patterns=["vcpkg", "boost", "cmake"],
                  timeout_s=DEPS_TIMEOUT_S, reporter=_QuietOk(ctx.reporter))
     if rc != 0:
         return rc
