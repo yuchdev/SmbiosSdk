@@ -8,7 +8,7 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
 |-------|------------------------------------------------------------------|----------------|-------|
 | 01.0  | `libsmbios` install rules and whole-archive-safe package export | ✅ Complete | - |
 | 02.0  | Self-hosted vcpkg overlay/registry port for `smbios_c`           | ✅ Complete | 25 script tests; registry smoke (macOS); CI full tier green |
-| 03.0  | GitHub Releases prebuilt artifacts - pipeline `package` stage (ADR 0005) | 🔶 In progress (Tasks 01-02 complete; Task 03 partial: verifier delivered, H1 fixed, arch guard added; SC1 on all three OSes wired by Story 04.0 Task 04's `verify` stage (2026-11-18), closes on its first green CI run) | 55 + 57 script tests (`test_package_archive`, `test_verify_release_artifact`); CI run 44074901424 green on all 18 jobs; all five release checks pass on macOS x64 with the literal `pkg-config` command |
+| 03.0  | GitHub Releases prebuilt artifacts - pipeline `package` stage (ADR 0005) | ✅ Complete | 49 + 57 script tests; CI run 44290476729 green with `verify` on all three legs (SC1 met); registry consumer against the real published baseline |
 | 04.0  | Release and publish automation - pipeline `verify`/`publish` stages (ADR 0005) | 🔶 In progress (Task 01 complete: root `project()` VERSION authoritative, `prepare_release.py`; RP-3 ruled 2026-11-18. Task 02 implemented: publish stage, `github-release` shipped `enabled: false`, RP-4 plumbing; Task 03 implemented: registry branch via `registry-prepare` + `registry-pr`, `vcpkg-registry` shipped `enabled: false`, append-only registry lint; Task 04 implemented: `verify` stage + `verify-gate`, anonymous `post-publish`, nightly registry consumer check and 5-release re-check; criteria 1 of Tasks 02/03 blocked on S-1..S-8 read-back and a real tag, Task 04's on its first CI run) | 24 script tests (`test_prepare_release`); 47 publish tests (`test_publish_github_release`) plus RP-4 package, plan and policy cases; Task 03: 25 + 16 + 10 new (`test_publish_vcpkg_registry`, `test_registry_update`, `test_registry_prepare`) plus history, plan, version-rule, allowlist and policy cases; Task 04: 37 + 21 new (`test_verify_stage`, `test_post_publish_check`) plus verifier, registry-smoke, plan, report and 2 policy fixtures |
 
 **Legend:** ✅ Complete · 🔶 In progress / partial · ⬜ Not started
@@ -335,3 +335,22 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
   - The Boost prefix and the vcpkg that builds it are both under `runner.temp`; that vcpkg is bootstrapped by `bootstrap_vcpkg.py`, never the image's.
 
   **Unverified until the next Windows run:** whether vcvars also puts a vcpkg path into `INCLUDE`/`LIB`. If it does, the guard fails loudly, naming the variable; it is not filtered silently.
+
+- **2026-11-18 CI run 44290476729 is fully green, and Story 03.0 closes.** This is the first run in which the `verify` stage passed on all three legs, which took four CI cycles and five distinct defects, none of which was reachable from a single x86_64 macOS host:
+
+  | Push | Outcome | Defect |
+  |------|---------|--------|
+  | `d34d214` | `lint` red | An over-broad test double (one fake answered every command, so `nm -D` received pkg-config's output), plus a latent 0014 flake where the random `::stop-commands::` hex nonce can spell a leak needle (~1 run in 137) |
+  | `d60c830` | `lint` green, all 3 `verify` legs crashed | `step_deps` passed literal regexes where `ci_patterns` takes registered set names; `compile_sets` raised `KeyError`, reported only as `internal error (KeyError)`. The step **skips on a local run**, so no local invocation could execute it |
+  | `bb10284` | `linux-x64` + `macos-arm64` green, `windows-x64` red | The clean-room guard correctly refused an unclean environment: GitHub's Windows image sets `VCPKG_INSTALLATION_ROOT=C:\vcpkg` **and puts it on `PATH`** |
+  | `7b1c940` | **all green** | `PATH` is now filtered rather than fatal (then re-asserted), and `msvc_env` upper-cases the names `vcvars` captures - Windows `set` prints `Path`, while every tool lookup reads `env.get("PATH")`, so `cl` and `dumpbin` were being looked up on the pre-`vcvars` value. That would have been the next failure |
+
+  **The gate linkage works for real.** `verify (gate)` emitted `b7b4235589cbe5bb98f40138710898037f1c1a624282c8a0896ecfbe197cff27`, which equals an independently computed `sha256(dist/manifest.json)` for that run. `publish-release` still skipped, because both destinations are `enabled: false` (constraint 12) - so the remaining gate is the repository settings, exactly as designed.
+
+  **Three per-leg details worth keeping:**
+  - **Windows removed two vcpkg `PATH` entries** (`PATH -2 vcpkg`): the image's `C:\vcpkg` and Visual Studio's own bundled vcpkg, which `vcvars` sets as `VCPKG_ROOT`. Because forbidden roots are computed from the *captured* environment, the second was caught without having been observed beforehand.
+  - **Linux reports `exports 14 ok` against 13 on macOS and Windows.** ELF counts the `SMBIOS_C_1.0` version tag the linker script adds; Mach-O and PE have no equivalent. Independently confirmed earlier not to be a leaked symbol: the CI-built `.so` exports exactly the 13 `smbios_*` functions plus that tag.
+  - **The C check found a real table only on Windows** (`c: ok structures=14`), while Linux and macOS degraded to `c: no-table` on virtualized firmware. Both are a pass per `smbios_open()`'s documented behaviour - one leg proved the C ABI against real firmware, two proved the degradation contract.
+
+  Story 03.0's success criterion 1 ("on each of Windows, Linux and macOS, a released artifact extracted on a clean machine passes all four checks") is therefore **met**, and Story 03.0 is ✅ Complete. It had been honestly unticked since 2026-11-17 because a single x86_64 Mac with no container runtime could not prove it.
+

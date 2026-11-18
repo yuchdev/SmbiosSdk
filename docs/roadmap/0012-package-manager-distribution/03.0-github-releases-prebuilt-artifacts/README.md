@@ -34,7 +34,7 @@ unwilling to add a vcpkg registry at all.
 |----|----------------------------------------------------------------------|----------------|--------|
 | 01 | [Package stage: archive the tested install tree](01-release-workflow-and-packaging.md) | ✅ Complete (validated on CI run 44074901424) | 02     |
 | 02 | [Artifact naming, checksums, and versioning](02-artifact-naming-checksums-and-versioning.md) | ✅ Complete | 03     |
-| 03 | [Tests](03-tests.md)                                                  | 🔶 Partial (verifier + 57 tests; H1 fixed, arch guard added; all five checks pass on macOS x64 with the literal `pkg-config` command, layout/digest/`pkg-config` on all three CI artifacts; SC1 wired on all three OSes by Story 04.0 Task 04 (`verify`, `build=True`, plus an export-allowlist check 6), closes on the first green CI `verify` run) | -      |
+| 03 | [Tests](03-tests.md) | ✅ Complete (verifier + 57 tests; H1 fixed, arch guard added; **SC1 met on CI run 44290476729** - `verify` green on all three legs) | -      |
 
 ## Key constraints
 

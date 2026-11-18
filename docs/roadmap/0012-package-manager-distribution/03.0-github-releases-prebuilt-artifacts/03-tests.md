@@ -1,11 +1,10 @@
 # 03 - Tests
 
 **Parent story:** [README.md](README.md)
-**Status:** 🔶 Partial (2026-11-17; updated 2026-11-18) - verifier and its tests delivered; all
-five checks pass on this host's leg (macOS x64). Story 04.0 **Task 04** (not Task 02) wired the
-`verify` stage that runs them with `build=True` on each leg's own runner, plus a sixth check (the
-export allowlist). Success criterion 1 completes on the first green CI `verify` run on all three
-legs, which has not happened yet - see As built and the 2026-11-18 note
+**Status:** ✅ Complete (2026-11-18) - verifier and its tests delivered, and Story 04.0 Task 04's
+`verify` stage ran them with `build=True` on each leg's own runner, plus a sixth check (the export
+allowlist). **Success criterion 1 is met: CI run 44290476729 is green on all three `verify` legs**
+(`linux-x64`, `macos-arm64`, `windows-x64`) - see As built and the 2026-11-18 note
 
 ## Objective
 
@@ -42,11 +41,23 @@ implementation, e.g. `scripts/verify_release_artifact.sh`/`.ps1`) that:
 
 ## Success criteria
 
-- [ ] On each of Windows, Linux, and macOS, a released artifact
+- [x] On each of Windows, Linux, and macOS, a released artifact
       extracted on a clean machine (no vcpkg, no Conan, no checkout of
       this repo's source) passes all four checks above.
-      **Not met yet. Wired by Story 04.0 Task 04 (2026-11-18); closes on its first green CI
-      run.** `stage.py verify` now runs this verifier with `build=True` and a relocatable `.pc`
+      **Met 2026-11-18 by CI run 44290476729**, green on all three `verify` legs, each
+      verifying its own leg's archive on a runner of that leg's own OS and architecture:
+      `ok: verify linux-x64: 7 files = manifest b7b4235589cb; tree 78 = install; pkg-config ok;
+      exports 14 ok; c: no-table; cxx: formatters=4`, the same for `macos-arm64`
+      (`exports 13 ok`), and `windows-x64` with `PATH -2 vcpkg; tree 81 = install;
+      pkg-config ok; exports 13 ok; c: ok structures=14; cxx: formatters=4`. Three details
+      worth recording: the Windows clean room needed **two** vcpkg `PATH` entries removed (the
+      image's `C:\vcpkg` and Visual Studio's own bundled one); Linux reports **14** exports
+      against 13 elsewhere because ELF counts the `SMBIOS_C_1.0` version tag the linker script
+      adds, which was independently confirmed not to be a leaked symbol; and the C check found a
+      real table only on Windows (`structures=14`), while Linux and macOS degraded cleanly to
+      `no-table` on virtualized firmware - both outcomes are a pass per `smbios_open()`'s
+      documented behaviour. Wired by Story 04.0 Task 04 (2026-11-18).
+      *Historical note, kept:* `stage.py verify` now runs this verifier with `build=True` and a relocatable `.pc`
       required, on `ubuntu-24.04`, `windows-2022` and `macos-15` (arm64), each verifying its own
       leg's archive from the same run's `dist/`, extracted into an empty directory, with Boost
       from a separate prefix and no vcpkg or checkout reachable from the consumer. Locally the
