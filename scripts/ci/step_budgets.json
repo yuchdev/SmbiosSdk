@@ -25,6 +25,13 @@
         "windows": 654
       },
       "budget_minutes": 22
+    },
+    "registry-prepare": {
+      "source": "0012 Story 04.0 Task 03: no CI run exists yet, so median_s is an ESTIMATE (15 min), not a baseline: one cold vcpkg build of the port's four Boost ports and the repository plus the consumer, which the tag-run packaging legs already do inside the 18-minute build budget. The resulting 30 minutes is also inventory C11's job ceiling. Story 02.0's single cold run took 34 min on a developer Mac (AppleClang 14); if the first tag runs exceed 30, that is a C11 decision, not a silent raise. Replace with the median of real tag runs.",
+      "median_s": {
+        "linux": 900
+      },
+      "budget_minutes": 30
     }
   },
   "steps": {

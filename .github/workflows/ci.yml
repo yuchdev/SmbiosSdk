@@ -159,8 +159,10 @@ jobs:
       manifest_sha256: ${{ fromJSON(needs.package.outputs.manifest_sha256) }}
       dist_artifact_id: ${{ needs.package.outputs.dist_artifact_id }}
 
-  # Milestone 0012 Story 04.0 Task 02 (ADR 0005 D6/D9): the release tier of the
-  # publish stage, the GitHub Release (release-draft, then release-promote).
+  # Milestone 0012 Story 04.0 Tasks 02-03 (ADR 0005 D6/D9): the release tier of
+  # the publish stage, the GitHub Release (release-draft, then release-promote)
+  # and, on a final release tag, the registry branch (registry-prepare, then
+  # registry-pr, which creates registry/v<version>; a human opens the PR).
   # Reached only from a v* tag push (P12 tier clause), only after the same
   # run's verify passed (needs: verify, and the implicit success() of a job
   # that names no status function), and only when the plan has publish rows -
@@ -172,7 +174,7 @@ jobs:
   publish-release:
     needs: [plan, build, package, verify]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.plan.outputs.publish != '[]'
-    # permissions: stage-publish.yml's release-draft and release-promote create, upload to and promote the GitHub Release; a called workflow's jobs cannot exceed this caller's grant (ADR 0005 D6).
+    # permissions: stage-publish.yml's release-draft and release-promote create, upload to and promote the GitHub Release, and registry-pr creates the registry/v<version> branch; a called workflow's jobs cannot exceed this caller's grant (ADR 0005 D6).
     permissions:
       contents: write
     uses: ./.github/workflows/stage-publish.yml
@@ -181,6 +183,9 @@ jobs:
       dist_artifact_id: ${{ needs.package.outputs.dist_artifact_id }}
       binary_cache: ${{ format('{{"linux-x64":{0},"windows-x64":{1},"macos-arm64":{2}}}', needs.build.outputs.binary_cache_linux_x64, needs.build.outputs.binary_cache_windows_x64, needs.build.outputs.binary_cache_macos_arm64) }}
       verified_manifest_sha256: ${{ needs.verify.outputs.verified_manifest_sha256 }}
+      # Story 04.0 Task 03: the registry jobs run only when the plan has their
+      # rows, i.e. on a final v<X.Y.Z> tag, never a pre-release (constraint 8).
+      registry: ${{ contains(needs.plan.outputs.publish, '"registry-pr"') }}
 
   # Story 04.0 Task 01 (plan E9): one run-level table of at most 40 lines
   # from the summary-<job>-<leg> artifacts every job uploads, and, when a

@@ -127,6 +127,79 @@ class RunTest(unittest.TestCase):
         self.assertIn("configure vcpkg consumer failed", str(cm.exception))
 
 
+class InstalledFilesTest(unittest.TestCase):
+    """Installed-file allowlist (0012 Story 04.0 Task 03, carried forward from Story 02.0).
+
+    Type: unit + invalid input. Scenario: vcpkg's own list file for the
+    ``smbios-c`` package names exactly the allowlisted files; a new root
+    ``install()`` rule (here the ``lib/libsmbios.dylib`` that the build from
+    portfile ``70f268a`` really shipped) or a missing file fails with one line.
+    On failure first check: ``vcpkg_installed/vcpkg/info/smbios-c_*.list`` of a
+    real run against ``INSTALLED_COMMON``/``INSTALLED_LIBRARIES``.
+    """
+
+    def write_list(self, root: Path, files, triplet: str = "arm64-osx") -> Path:
+        info = root / "vcpkg" / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        dirs = sorted({f.rsplit("/", 1)[0] + "/" for f in files if "/" in f})
+        lines = [f"{triplet}/"] + [f"{triplet}/{d}" for d in dirs] + \
+            [f"{triplet}/{f}" for f in files]
+        (info / f"smbios-c_1.0.1_{triplet}.list").write_text("\n".join(lines) + "\n")
+        # A dependency's list file is not counted.
+        (info / f"boost-test_1.88.0_{triplet}.list").write_text(f"{triplet}/include/x.hpp\n")
+        return root
+
+    def expected(self, suffix: str):
+        return list(smoke.INSTALLED_COMMON) + list(smoke.INSTALLED_LIBRARIES[suffix])
+
+    def test_ExactSetPasses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.write_list(Path(tmp), self.expected(".dylib"))
+            self.assertEqual(smoke.check_installed_files(root, Path("libsmbios_c.dylib")), 10)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.write_list(Path(tmp), self.expected(".so"), "x64-linux")
+            self.assertEqual(smoke.check_installed_files(root, Path("libsmbios_c.so")), 10)
+
+    def test_StrayLibsmbiosDylibFails(self) -> None:
+        """Regression: the package built from portfile 70f268a shipped lib/libsmbios.dylib."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.write_list(Path(tmp), self.expected(".dylib") + ["lib/libsmbios.dylib"])
+            with self.assertRaises(consumer_smoke.SmokeError) as cm:
+                smoke.check_installed_files(root, Path("libsmbios_c.dylib"))
+        self.assertEqual(str(cm.exception), "installed files: expected the 10 allowlisted "
+                                            "files -> actual 1 extra, 0 missing (first: "
+                                            "+lib/libsmbios.dylib)")
+
+    def test_MissingFileFails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.write_list(Path(tmp), self.expected(".so")[1:], "x64-linux")
+            with self.assertRaises(consumer_smoke.SmokeError) as cm:
+                smoke.check_installed_files(root, Path("libsmbios_c.so"))
+        self.assertIn("0 extra, 1 missing (first: -include/smbios/smbios.h)", str(cm.exception))
+
+    def test_WindowsPdbsAreOptionalOnly(self) -> None:
+        for extra, ok in (([], True), (["bin/smbios_c.pdb", "debug/bin/smbios_c.pdb"], True),
+                          (["bin/smbios.dll"], False)):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as tmp:
+                root = self.write_list(Path(tmp), self.expected(".dll") + extra, "x64-windows")
+                if ok:
+                    smoke.check_installed_files(root, Path("smbios_c.dll"))
+                else:
+                    with self.assertRaises(consumer_smoke.SmokeError):
+                        smoke.check_installed_files(root, Path("smbios_c.dll"))
+
+    def test_MissingOrMalformedListFileFails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(consumer_smoke.SmokeError) as cm:
+                smoke.check_installed_files(Path(tmp), Path("libsmbios_c.so"))
+            self.assertIn("expected one smbios-c list file -> actual 0", str(cm.exception))
+            root = self.write_list(Path(tmp), self.expected(".so"), "x64-linux")
+            listfile = next((root / "vcpkg" / "info").glob("smbios-c_*.list"))
+            listfile.write_text("other-triplet/lib/x.so\n")
+            with self.assertRaises(consumer_smoke.SmokeError):
+                smoke.check_installed_files(root, Path("libsmbios_c.so"))
+
+
 class HeadCommitTest(unittest.TestCase):
     def test_RejectsNonShaOutput(self) -> None:
         with mock.patch.object(consumer_smoke, "_run", return_value="not-a-sha\n"):

@@ -246,11 +246,71 @@ class PublishGatingTests(unittest.TestCase):
         data = self.data({"package", "verify", "publish"})
         rows = plan.matrix_for("tag", "refs/tags/v1.0.1", "full", data=data)["publish"]
         self.assertEqual(rows, [{"job": "release-draft", "tier": "release"},
-                                {"job": "release-promote", "tier": "release"}])
+                                {"job": "release-promote", "tier": "release"},
+                                {"job": "registry-prepare", "tier": "release"},
+                                {"job": "registry-pr", "tier": "release"}])
         for event, ref in (("push", "refs/heads/master"), ("pr", "refs/pull/3/merge"),
                            ("schedule", "refs/heads/master"), ("push", "refs/heads/topic")):
             with self.subTest(event=event, ref=ref):
                 self.assertEqual(plan.matrix_for(event, ref, "full", data=data)["publish"], [])
+
+
+class PreReleaseRegistryTests(unittest.TestCase):
+    """Type: unit + edge + invalid input. Threat model 2026-11-18 constraint 8 (0012 Story 04.0 Task 03).
+
+    Scenario: a pre-release tag ``v<X.Y.Z>-<pre>`` publishes a GitHub
+    pre-release but produces **no** ``registry-prepare``/``registry-pr`` row,
+    so it can never register a version. A tag outside the release grammar
+    gets no registry row either (fail closed). On failure first check:
+    ``plan._publish_rows`` and the ``prerelease``/``prepare_job`` keys of
+    ``scripts/ci/publish_jobs.json``.
+    """
+
+    RELEASE_ROWS = [{"job": "release-draft", "tier": "release"},
+                    {"job": "release-promote", "tier": "release"}]
+
+    def data(self) -> plan.PlanData:
+        base = plan.load_data()
+        return plan.PlanData(base.legs, base.pins, base.publish_jobs,
+                             frozenset({"package", "verify", "publish"}))
+
+    def jobs(self, ref: str) -> list:
+        return plan.matrix_for("tag", ref, "full", data=self.data())["publish"]
+
+    def test_PreReleaseTagHasNoRegistryRows(self) -> None:
+        for ref in ("refs/tags/v1.0.1-rc.1", "refs/tags/v1.0.1-beta", "refs/tags/v2.0.0-0.3.7"):
+            with self.subTest(ref=ref):
+                self.assertEqual(self.jobs(ref), self.RELEASE_ROWS)
+
+    def test_TagOutsideTheReleaseGrammarHasNoRegistryRows(self) -> None:
+        for ref in ("refs/tags/v1.0", "refs/tags/v01.0.1", "refs/tags/v1.0.1x",
+                    "refs/tags/v1.0.1-", "refs/tags/v1.0.1+build"):
+            with self.subTest(ref=ref):
+                self.assertEqual(self.jobs(ref), self.RELEASE_ROWS)
+
+    def test_FinalTagGetsPrepareBeforeItsRegistryJob(self) -> None:
+        jobs = [r["job"] for r in self.jobs("refs/tags/v10.20.30")]
+        self.assertEqual(jobs[-2:], ["registry-prepare", "registry-pr"])
+        self.assertTrue(plan.final_release_tag("refs/tags/v10.20.30"))
+        self.assertFalse(plan.final_release_tag("refs/heads/v1.0.1"))
+
+    def test_RealRegistryEntryIsFinalOnlyAndPrepareIsUnlisted(self) -> None:
+        entry = next(j for j in plan.load_data().publish_jobs if j["job"] == "registry-pr")
+        self.assertEqual((entry["prerelease"], entry["prepare_job"], entry["permissions"]),
+                         (False, "registry-prepare", ["contents: write"]))
+        self.assertNotIn("registry-prepare",
+                         [j["job"] for j in plan.load_data().publish_jobs])
+
+    def test_MalformedFlagsAreRejected(self) -> None:
+        base = plan.load_data()
+        for bad in ({"prerelease": "no"}, {"prepare_job": "Bad Job"}, {"prepare_job": 3}):
+            with self.subTest(bad=bad):
+                jobs = [dict(j, **bad) if j["job"] == "registry-pr" else j
+                        for j in base.publish_jobs]
+                data = plan.PlanData(base.legs, base.pins, tuple(jobs),
+                                     frozenset({"package", "verify", "publish"}))
+                with self.assertRaises(plan.PlanError):
+                    plan.matrix_for("tag", "refs/tags/v1.0.1", "full", data=data)
 
 
 class ParsePlanTests(unittest.TestCase):

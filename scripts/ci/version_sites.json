@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "about": "Version sites checked by scripts/ci/check_versions.py (milestone 0014 plan SC3; ADR 0005 D5). 'authoritative' is the one hand-edited value: the root CMakeLists.txt project(... VERSION X.Y.Z). Until milestone 0012 adds that VERSION (a product-build change, ADR 0005 D5), 'interim_authoritative' names the site that stands in for it, and with a single site the check passes trivially (plan SC3 'Prerequisite'). Each row of 'sites' is {site, file, extractor, rule}: extractor is one of cmake_project_version, cmake_set:<VAR>, json_key:<dotted.path>; rule 'equal' requires the literal to equal the authoritative value, 'derived' additionally accepts a reference to ${PROJECT_VERSION}/${CMAKE_PROJECT_VERSION} (and fails on any other variable). Milestone 0012 adds rows for LIBSMBIOS_VERSION, the port vcpkg.json and the registry baseline.",
+  "about": "Version sites checked by scripts/ci/check_versions.py (milestone 0014 plan SC3; ADR 0005 D5). 'authoritative' is the one hand-edited value: the root CMakeLists.txt project(... VERSION X.Y.Z). Until milestone 0012 adds that VERSION (a product-build change, ADR 0005 D5), 'interim_authoritative' names the site that stands in for it, and with a single site the check passes trivially (plan SC3 'Prerequisite'). Each row of 'sites' is {site, file, extractor, rule}: extractor is one of cmake_project_version, cmake_set:<VAR>, json_key:<dotted.path>; rule 'equal' requires the literal to equal the authoritative value, 'derived' additionally accepts a reference to ${PROJECT_VERSION}/${CMAKE_PROJECT_VERSION} (and fails on any other variable). Milestone 0012 adds rows for LIBSMBIOS_VERSION, the port vcpkg.json and the registry baseline. Rule 'registered' (0012 Story 04.0 Task 03) requires a literal not newer than the authoritative value: the registry baseline must name a registered version (check_vcpkg_registry.py, threat model 2026-11-18 RP-3), and the entry of a release can only be created after the release commit (its REF), so the baseline trails the authoritative value from the release commit until its registry/v<version> branch merges. prepare_release.py edits 'equal' sites only, so it never touches the baseline.",
   "authoritative": {
     "site": "root project() VERSION",
     "file": "CMakeLists.txt",
@@ -30,7 +30,7 @@
       "site": "smbios-c registry baseline",
       "file": "versions/baseline.json",
       "extractor": "json_key:default.smbios-c.baseline",
-      "rule": "equal"
+      "rule": "registered"
     }
   ]
 }

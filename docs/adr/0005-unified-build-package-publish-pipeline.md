@@ -9,6 +9,8 @@
 > **Superseded by:** _(none)_
 >
 > **Amended:** 2026-11-13 by the [CI-rework threat model](/docs/security/2026-11-13-ci-rework.md) (CR-1, CR-2, CR-3): D6/D9 staging tier reconciled with P8; S3 confinement made canonical-path based and create-only; P8/P10-P13 amended and P14/P15 added; new section [Repository settings required](#repository-settings-required).
+>
+> **Amended:** 2026-11-18 by 0012 Story 04.0 Task 03, applying the [release-and-publish threat model](/docs/security/2026-11-18-release-and-publish-automation.md) (RP-2, RP-3, RP-9). D5: the registry baseline is checked with the new site rule `registered` (not newer than the authoritative value), because a release's registry entry can only be created after its release commit. D6: the registry update is two jobs, `registry-prepare` (no credential) and `registry-pr` (`contents: write` only). The latter creates a branch and never opens a PR. Details are at those sections; ratification by the architect is pending.
 
 ## Context
 
@@ -88,7 +90,7 @@ $CI_ARTIFACT_DIR/
 **Authoritative:** the root `CMakeLists.txt` `project(... VERSION X.Y.Z)` value.
 
 - **Derived** at configure time, never hand-edited: `SMBIOS_C_VERSION`, `LIBSMBIOS_VERSION` and the generated `smbios_c.pc` / `libsmbiosConfigVersion.cmake`.
-- **Checked** against the authoritative value: the port's `ports/smbios-c/vcpkg.json` `"version"`, the registry's `versions/baseline.json` entry, and, on tag events only, the tag. The tag must equal `v<X.Y.Z>` (optionally `-<prerelease>`).
+- **Checked** against the authoritative value: the port's `ports/smbios-c/vcpkg.json` `"version"`, the registry's `versions/baseline.json` entry, and, on tag events only, the tag. *(Amended 2026-11-18, 0012 Story 04.0 Task 03.)* The baseline uses rule `registered`: not newer than the authoritative value. The registry lint additionally requires it to name the newest registered entry. A release's entry records a port `REF` equal to the release commit itself, so it can only land in a later commit (the merged `registry/v<version>` branch). Between the two commits the release commit is *pending registration* and stays green. The tag must equal `v<X.Y.Z>` (optionally `-<prerelease>`).
 - **Where the check lives:** `scripts/ci/check_versions.py` reads a data file (`scripts/ci/version_sites.json`) that lists every version site and its rule (`derived` or `equal`). It runs in `lint` on every event, plus in the tag check of the publish stage. Mismatches are printed in RC1 discrepancy form (`<site>: expected <x> -> actual <y>`). 0014 ships the script with the sites that exist today, and 0012 adds a row per new site.
 - **Out of scope for this value:** binding packages (0013) keep their own versions, by 0013's own Key constraints. Their manifests are checked only for the `smbios_c` version range they declare.
 - **The legacy tag scheme never triggers a release.** The `-DGIT_TAG=ON` scheme (`<n>.<n>.<n>.<n>` tags) never matches the `v*` release trigger. The policy gate forbids a release trigger pattern that could match it.
@@ -103,7 +105,8 @@ $CI_ARTIFACT_DIR/
   |-------------|-------------|
   | `release-draft` | `contents: write` |
   | `release-promote` | `contents: write` |
-  | `registry-pr` | `contents: write` + `pull-requests: write` |
+  | `registry-prepare` | `contents: read` (no environment, no credential; amended 2026-11-18, threat model RP-2) |
+  | `registry-pr` | `contents: write` (amended 2026-11-18, threat model RP-9: `pull-requests: write` dropped; it creates the branch `registry/v<version>` and never opens or approves a PR) |
   | Binding publish (later) | `id-token: write` for OIDC trusted publishing where the registry supports it |
 
 - **Publish to a `release`-tier destination runs only on a release-tag event, and only after `verify` succeeded in the same run.** For bindings, publish runs only on that binding's own publish trigger (the trigger is 0013's decision) and only after that binding's verify job succeeded in the same run.
@@ -114,7 +117,7 @@ $CI_ARTIFACT_DIR/
   2. It re-reads the draft's asset digests and compares them with `manifest.json`.
   3. `release-promote` publishes the draft.
 - **Post-publish check.** A `post-publish` check then downloads the public assets by URL and re-checks their digests (0012 Story 04.0 Task 04). Its failure is a hard, loud failure that names the release. It is not a rollback.
-- **Registry PR timing.** A PR opened with `GITHUB_TOKEN` does not trigger workflows. The registry validation (filesystem-registry consumer test, review M3/H2) therefore runs **inside the publish run, before** the PR is opened. Merging is reviewed by a human.
+- **Registry PR timing.** A PR opened with `GITHUB_TOKEN` does not trigger workflows. The registry validation (filesystem-registry consumer test, review M3/H2) therefore runs **inside the publish run, before** the PR is opened. Merging is reviewed by a human. *(Amended 2026-11-18, 0012 Story 04.0 Task 03; threat model RP-2, RP-9.)* The validation runs in the unprivileged `registry-prepare` job, before any write. `registry-pr` then only creates the branch. A maintainer opens the PR, which therefore does run CI.
 - **Credentials.** P8 (no `secrets.`) stays for every non-publish job. In a publish job, a credential is allowed only through the GitHub *environment* of its tier (`release`, with required reviewers; or `staging`, deployable from `master` only), and the job is listed in the policy gate's allowlist. OIDC trusted publishing is preferred over a stored token wherever the registry supports it. Within the publish job, child processes receive a credential only when the step passes it by name (0014 Story 02.0 Task 04).
 - **The policy gate is not the boundary.** For `push`, `pull_request`, `workflow_dispatch` and tag events, GitHub runs the YAML of the triggering ref, so the guards above are enforced by code an actor with write access controls. The boundary is the repository and environment settings in [Repository settings required](#repository-settings-required). In the publish stage (0012), before any write, a defence-in-depth check confirms that the tagged commit is an ancestor of `origin/master`.
 
@@ -226,6 +229,7 @@ Scripts read **only** these names, never `GITHUB_*`, `RUNNER_*` or `teamcity.*`.
 | `CI_VERIFIED_MANIFEST_SHA256` | The manifest digest the same run's verify passed; publish refuses without it (added 2026-11-18; D6) | `matrix.verified_manifest_sha256`, from `needs.verify.outputs.verified_manifest_sha256` | the verify configuration's output parameter |
 | `CI_BUILD_BINARY_CACHE` | JSON object leg -> `binary_cache` from the build job, cross-checked by a `release`-tier destination (added 2026-11-18; RP-4) | `matrix.binary_cache` of `stage-publish.yml` | the build configurations' binary-cache parameters |
 | `CI_REPOSITORY` | `owner/name` a publish destination writes to (added 2026-11-18) | `github.repository` | literal parameter on the publish configuration |
+| `CI_REGISTRY_PREPARED` | The `registry-prepare` job's hand-over: `{base, git_tree, files: {path: sha256}}`, which `registry-pr` checks the downloaded registry files against (added 2026-11-18, 0012 Story 04.0 Task 03; RP-2) | `matrix.prepared`, from `needs.registry-prepare.outputs.registry_prepared` | the prepare configuration's output parameter |
 | `CI_JOB` / `CI_LEG` | Stage job and leg (`linux-x64`, ...) | job id / matrix value | build configuration id / DSL parameter |
 | `CI_WORKSPACE` | Checkout root | `github.workspace` | `%teamcity.build.checkoutDir%` |
 | `CI_TEMP_DIR` | Per-run scratch | `runner.temp` | `%teamcity.build.tempDir%` |
@@ -284,7 +288,7 @@ The line-count and byte ceilings (64 lines, 16 KiB), the discrepancy form and th
 | Concurrency cancel | Not neutral | `concurrency:` group + `cancel-in-progress` | Queue optimisation replaces superseded *queued* builds. Cancelling *running* builds needs a REST call or a server setting (needs reimplementation; verify on migration). |
 | Nightly | `CI_EVENT=schedule` | `schedule: cron` | Schedule trigger |
 | Release creation | `scripts/ci/publish_github_release.py` calling the GitHub REST API with `CI_PUBLISH_TOKEN` (no marketplace action) | `GITHUB_TOKEN`, `contents: write` on the publish job | Fine-grained token / GitHub App token as a password parameter on the publish configuration (there is no `GITHUB_TOKEN` outside Actions) |
-| Registry PR | `scripts/ci/open_registry_pr.py` (REST) | `GITHUB_TOKEN` | Same token as above |
+| Registry branch | `scripts/ci/publish_vcpkg_registry.py` (REST, Git Data API; amended 2026-11-18: a branch, no PR, no `open_registry_pr.py`), after the unprivileged `registry_prepare.py` | `GITHUB_TOKEN`, `contents: write` on `registry-pr` only | Same token as above |
 | Binding publish credentials | Stage command reads token or OIDC | `id-token: write` trusted publishing | **Needs reimplementation:** PyPI/crates.io trusted publishing does not list TeamCity as an identity provider, so a scoped API token is needed. This is a real security downgrade that must be recorded on migration. |
 | Least privilege | D6 | Job `permissions:` + `release` environment reviewers | Credentials only on the publish configuration + its approval feature / project permissions |
 

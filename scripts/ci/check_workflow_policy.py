@@ -169,6 +169,10 @@ LEGACY_TAG_SAMPLES: Tuple[str, ...] = ("1.0.2.202611131", "1.2.3.4")
 _PUBLISH_RUN = re.compile(r"^python3 scripts/ci/stage\.py publish --destination "
                           r"[a-z0-9][a-z0-9-]{0,39}( --only [a-z]{1,20})?$")
 PUBLISH_STEP_ACTIONS: Tuple[str, ...] = ("actions/checkout", "actions/download-artifact")
+#: P12 (0012 Story 04.0 Task 03; RP-2, constraint 1): publish phases that run the
+#: toolchain (vcpkg, a compiler, a consumer test) and so belong in an
+#: unprivileged job, never in a listed (credentialed) publish job.
+UNPRIVILEGED_PUBLISH_PHASES: Tuple[str, ...] = ("prepare",)
 #: P8 (RP-8, constraint 2): the only env: keys of the publish step a secret may fill.
 PUBLISH_CREDENTIAL_PREFIX = "CI_PUBLISH_"
 
@@ -1532,6 +1536,10 @@ class _WorkflowCheck:
                 body = " ".join(str(step["run"]).split())
                 if _PUBLISH_RUN.fullmatch(body):
                     runs += 1
+                    phase = body.split(" --only ", 1)[1] if " --only " in body else ""
+                    if phase in UNPRIVILEGED_PUBLISH_PHASES:
+                        self.v(loc, "P12", "no toolchain phase in a credentialed job (RP-2)",
+                               f"--only {phase}")
                 else:
                     self.v(loc, "P12", "only one stage.py publish --destination run: step",
                            body[:60] or "empty")

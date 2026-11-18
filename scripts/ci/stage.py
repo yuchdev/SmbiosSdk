@@ -85,11 +85,15 @@ legs only; it never configures or builds; stops at the first failing step):
     each package job exports ``archive_sha256_<leg>``. The build job's
     ``compile`` step exports ``binary_cache_<leg>`` on a packaging leg:
     ``none`` only for ``VCPKG_BINARY_SOURCES=clear`` with 0 restored packages.
-``publish`` (milestone 0012 Story 04.0 Task 02; ADR 0005 D6/D9; not leg-based;
-:func:`run_publish`): ``--destination <name>`` names an entry of
+``publish`` (milestone 0012 Story 04.0 Tasks 02-03; ADR 0005 D6/D9; not
+leg-based; :func:`run_publish`): ``--destination <name>`` names an entry of
 ``publish_destinations.json``; ``--only`` is one phase per job: ``preflight``
 (settings drift + tag/commit binding; writes nothing), ``draft``
-(``release-draft``) or ``promote`` (``release-promote``). ``--dry-run`` lists
+(``release-draft``) or ``promote`` (``release-promote``) for
+``github-release``; ``prepare`` (``registry-prepare``: no credential, runs git,
+``vcpkg x-add-version`` and the registry consumer test, sets the job output
+``registry_prepared``) or ``branch`` (``registry-pr``: REST only, creates
+``registry/v<version>``; ``CI_REGISTRY_PREPARED``) for ``vcpkg-registry``. ``--dry-run`` lists
 every read and write with no network and without reading the credential. A
 real run refuses a disabled destination, a local run, an event outside the
 tier, an unanchored or invalid manifest (``CI_MANIFEST_SHA256``), a leg that
@@ -166,6 +170,7 @@ if _HERE not in sys.path:
 import argparse  # noqa: E402
 import contextlib  # noqa: E402
 import hashlib  # noqa: E402
+import inspect  # noqa: E402
 import json  # noqa: E402
 import platform  # noqa: E402
 import re  # noqa: E402
@@ -195,8 +200,9 @@ STEPS: Final[Dict[str, Tuple[str, ...]]] = {
     "test": ("unit", "cli-formats", "live-table", "consumer", "gui-binary", "gui-hooks",
              "gui-ci", "gui-local"),
     "package": ("env", "unpack", "archive", "manifest"),
-    # 0012 Story 04.0 Task 02: one phase per publish job (run_publish; not leg-based).
-    "publish": ("preflight", "draft", "promote"),
+    # 0012 Story 04.0 Tasks 02-03: one phase per publish job (run_publish; not
+    # leg-based). Each destination module lists its own PHASES; preflight is common.
+    "publish": ("preflight", "draft", "promote", "prepare", "branch"),
 }
 #: Run order of each (stage, job); a stage absent here runs all of ``STEPS``.
 JOB_STEPS: Final[Dict[Tuple[str, str], Tuple[str, ...]]] = {
@@ -1563,7 +1569,8 @@ def run_plan(reporter: Reporter) -> int:
 DESTINATIONS_FILE: Final = Path(_HERE) / "publish_destinations.json"
 #: Destination modules, until 0012 Story 04.0 Task 05 moves them to
 #: ``scripts/ci/destinations/<name>.py`` behind the D9 interface.
-DESTINATION_MODULES: Final[Dict[str, str]] = {"github-release": "publish_github_release"}
+DESTINATION_MODULES: Final[Dict[str, str]] = {"github-release": "publish_github_release",
+                                               "vcpkg-registry": "publish_vcpkg_registry"}
 _DESTINATION_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 
 
@@ -1675,17 +1682,67 @@ def _publish_gates(entry: Mapping[str, object], name: str) -> None:
                                     f"{event or 'none'} (staging tier, ADR 0005 D9)")
 
 
-def run_publish(args: argparse.Namespace) -> int:
-    """``stage.py publish --destination <name> --only preflight|draft|promote [--dry-run]``.
+def _publish_prepare(name: str, inputs, reporter: Reporter, log: Callable[[str], None]) -> str:
+    """The unprivileged ``prepare`` phase of ``vcpkg-registry`` (0012 Story 04.0 Task 03).
 
-    The credential (``CI_PUBLISH_TOKEN``) is removed from ``os.environ`` before
-    anything else runs (RP-8) and handed to the destination as a redacted
+    Installs the pinned tools, bootstraps vcpkg (cold: ``VCPKG_BINARY_SOURCES``
+    is ``clear`` on a tag event, CR-2), runs :func:`registry_prepare.run` and
+    sets the job output ``registry_prepared`` (``{"base", "git_tree",
+    "files"}``), the out-of-band digests ``registry-pr`` checks the hand-over
+    against. This job holds no credential (checked by the caller).
+
+    Raises:
+        registry_prepare.PrepareError: A refused or failed step.
+    """
+    import bootstrap_vcpkg
+    import registry_prepare
+    legs = load_legs()
+    ctx = Context(stage="publish", leg=_leg("linux", legs["legs"]["linux"]),  # type: ignore[index]
+                  reporter=reporter,
+                  workspace=Path(env_names.get("CI_WORKSPACE", required=True)).resolve(),
+                  temp_dir=Path(env_names.get("CI_TEMP_DIR", required=True)),
+                  log_dir=Path(env_names.get("CI_LOG_DIR", required=True)),
+                  results=Path(env_names.get("CI_RESULTS_FILE", required=True)),
+                  artifact_dir=Path(env_names.get("CI_ARTIFACT_DIR", required=True)),
+                  event=env_names.get("CI_EVENT"), ref=env_names.get("CI_REF"),
+                  ref_name=env_names.get("CI_REF_NAME"), platform=env_names.get("CI_PLATFORM"),
+                  run_id=env_names.get("CI_RUN_ID") or "local")
+    rc, tools_ok = _tools(ctx)
+    if rc != 0:
+        raise registry_prepare.PrepareError("pinned tools: expected installed -> actual failed")
+    if tools_ok is not None:
+        log(f"info: pinned tools: {tools_ok[0]} ({tools_ok[1]}s)")
+    if bootstrap_vcpkg.main(["--reporter", reporter.name, "--repo-root", str(ctx.workspace),
+                             "--packaging-leg"]) != 0:
+        raise registry_prepare.PrepareError("vcpkg bootstrap: expected ok -> actual failed")
+    vcpkg_root = Path(os.environ.get("VCPKG_ROOT", ""))
+    lines, prepared = registry_prepare.run(workspace=ctx.workspace, temp_dir=ctx.temp_dir,
+                                           artifact_dir=ctx.artifact_dir, inputs=inputs,
+                                           vcpkg_root=vcpkg_root)
+    for line in lines:
+        log(line)
+    reporter.set_output("registry_prepared", prepared)
+    return (f"{name} prepare {inputs.tag}: {len(prepared['files'])} files handed over, "  # type: ignore[arg-type]
+            f"git-tree {str(prepared['git_tree'])[:12]}, base {str(prepared['base'])[:12]}")
+
+
+def run_publish(args: argparse.Namespace) -> int:
+    """``stage.py publish --destination <name> --only <phase> [--dry-run]``.
+
+    Phases: ``preflight`` (every destination), then the module's ``PHASES``:
+    ``draft``/``promote`` (``github-release``), ``prepare``/``branch``
+    (``vcpkg-registry``, 0012 Story 04.0 Task 03). The credential
+    (``CI_PUBLISH_TOKEN``) is removed from ``os.environ`` before anything else
+    runs (RP-8) and handed to the destination as a redacted
     :class:`publish_github_release.Secret`; a dry run discards it unread. No
-    child process is started on this path. Exit 0 success, 1 a refusal or a
-    failed request (one RC1 line), 2 a usage error, 70 an internal error
-    (type name only, never its message).
+    child process is started on a credentialed path. A module's
+    ``UNPRIVILEGED_PHASES`` (``prepare``) run the toolchain, so they refuse
+    when a credential was set at all (RP-2) and never build an API client.
+    Exit 0 success, 1 a refusal or a failed request (one RC1 line), 2 a usage
+    error, 70 an internal error (type name only, never its message).
     """
     secret = os.environ.pop("CI_PUBLISH_TOKEN", "")
+    had_secret = bool(secret)
     if args.dry_run:
         secret = ""
     try:
@@ -1711,7 +1768,14 @@ def run_publish(args: argparse.Namespace) -> int:
         return EXIT_USAGE
     import importlib
     import publish_inputs as pin
+    import registry_update
     module = importlib.import_module(DESTINATION_MODULES[name])
+    phases = ("preflight",) + tuple(getattr(module, "PHASES", ()))
+    unprivileged = tuple(getattr(module, "UNPRIVILEGED_PHASES", ()))
+    if args.only is not None and args.only not in phases:
+        ci_step.emit_error(f"stage.py: error: --only must be one of: {', '.join(phases)} "
+                           f"for {name}")
+        return EXIT_USAGE
     label = f"publish {name}" + (f" {args.only}" if args.only else "") + \
         (" (dry run)" if args.dry_run else "")
     start = time.monotonic()
@@ -1720,34 +1784,54 @@ def run_publish(args: argparse.Namespace) -> int:
         ci_step.emit(reporter.info(line))
 
     try:
+        if args.only in unprivileged and had_secret:
+            # RP-2 / constraint 1: a phase that runs the toolchain never shares
+            # a job with a credential (the token is already out of os.environ).
+            raise pin.PublishInputError(f"{name} {args.only}: expected no credential in this "
+                                        "job (RP-2: toolchain code never runs beside a token) "
+                                        "-> actual CI_PUBLISH_TOKEN set")
         if not args.dry_run:
             _publish_gates(entry, name)
         inputs = _publish_inputs(entry, args.dry_run, log)
         verified = env_names.get("CI_VERIFIED_MANIFEST_SHA256")
         if args.dry_run:
             if args.only != "preflight":
+                extra = {"workspace": Path(env_names.get("CI_WORKSPACE", required=True))} \
+                    if "workspace" in inspect.signature(module.dry_run_plan).parameters else {}
                 ci_step.emit([ln for line in module.dry_run_plan(
-                    inputs, env_names.get("CI_REPOSITORY") or "<owner>/<repo>", args.only)
-                    for ln in reporter.info(line)])
+                    inputs, env_names.get("CI_REPOSITORY") or "<owner>/<repo>", args.only,
+                    **extra) for ln in reporter.info(line)])
             gate = ("passes" if verified == inputs.manifest.sha256 else
                     "refuses (no verify result)" if not verified else "refuses (other manifest)")
             state = "enabled" if entry.get("enabled") is True else "disabled (real run refuses)"
             summary = (f"{inputs.tag}: {len(inputs.assets)} assets match manifest "
                        f"{inputs.manifest.sha256[:16]}, {state}, verify gate {gate}, "
                        "0 requests, credential unread")
+        elif args.only in unprivileged:
+            pin.check_verify_gate(inputs.manifest.sha256, verified)
+            summary = _publish_prepare(name, inputs, reporter, log)
         else:
             pin.check_verify_gate(inputs.manifest.sha256, verified)
+            kwargs = {}
+            if hasattr(module, "load_handoff") and args.only not in (None, "preflight"):
+                kwargs["handoff"] = module.load_handoff(
+                    Path(env_names.get("CI_ARTIFACT_DIR", required=True)),
+                    env_names.get("CI_REGISTRY_PREPARED"))
             api = module.GitHubApi(module.Secret(secret), env_names.get("CI_REPOSITORY"))
             secret = ""
             if args.only == "preflight":
-                module.settings_preflight(api, log)
-                module.commit_preflight(api, inputs)
+                import publish_github_release
+                publish_github_release.settings_preflight(api, log)
+                if hasattr(module, "workflow_settings_preflight"):
+                    module.workflow_settings_preflight(api, log)
+                publish_github_release.commit_preflight(api, inputs)
                 summary = (f"preflight {inputs.tag}: tag and master ancestry bind "
                            f"{inputs.commit[:12]}, {len(inputs.assets)} assets match the "
                            "manifest")
             else:
-                summary = getattr(module, args.only)(api, inputs, log)
-    except (pin.PublishInputError, getattr(module, "PublishError", pin.PublishInputError)) as exc:
+                summary = getattr(module, args.only)(api, inputs, log, **kwargs)
+    except (pin.PublishInputError, registry_update.RegistryError,
+            getattr(module, "PublishError", pin.PublishInputError)) as exc:
         text = str(exc).splitlines()[0] if str(exc) else "refused"
         elapsed = round(time.monotonic() - start, 1)
         ci_step.emit(reporter.step_fail(label, EXIT_GATE, elapsed, text, []))

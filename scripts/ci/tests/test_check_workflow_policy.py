@@ -133,7 +133,10 @@ class OneViolationPerRule(unittest.TestCase):
                      "p15_upload_other_name_directory",
                      # 2026-11-18 threat model, constraints 1-2 (0012 Story 04.0 Task 02)
                      "p12_publish_extra_step", "p12_publish_download_by_name",
-                     "p8_publish_secret_at_job_level"):
+                     "p8_publish_secret_at_job_level",
+                     # 2026-11-18 threat model RP-2, RP-9 (0012 Story 04.0 Task 03)
+                     "p12_publish_prepare_in_credentialed_job",
+                     "p12_registry_pr_pull_requests_write"):
             self.assertTrue((WORKFLOW_FIXTURES / name).is_dir(), name)
 
     def test_SameRepoComparisonIsTheOnlyHeadRepoUse(self) -> None:
@@ -182,23 +185,45 @@ class PublishJobShape(unittest.TestCase):
         for name, rule, needle in (
                 ("p12_publish_extra_step", "P12", "stage.py verify"),
                 ("p12_publish_download_by_name", "P12", "name"),
-                ("p8_publish_secret_at_job_level", "P8", "job-level secrets reference")):
+                ("p8_publish_secret_at_job_level", "P8", "job-level secrets reference"),
+                ("p12_publish_prepare_in_credentialed_job", "P12", "--only prepare"),
+                ("p12_registry_pr_pull_requests_write", "P12", "pull-requests: write")):
             with self.subTest(case=name):
                 (violation,) = run_case(WORKFLOW_FIXTURES / name)
                 self.assertEqual(violation.rule, rule)
                 self.assertIn(needle, violation.actual)
 
     def test_RealPublishWorkflowHasTheAllowedShapeOnly(self) -> None:
-        """Normal case: the shipped stage-publish.yml passes, and each job has one publish step."""
+        """Normal case: the shipped stage-publish.yml passes, and each job has one publish step.
+
+        Task 03 (RP-2): ``registry-prepare`` runs the toolchain phase with
+        ``contents: read``, no environment and no secret, and is not a listed
+        publish job; ``registry-pr`` is listed with ``contents: write`` only.
+        """
         root = gate.load_yaml((REAL_WORKFLOWS / "stage-publish.yml").read_text(encoding="utf-8"))
-        self.assertEqual(sorted(root["jobs"]), ["release-draft", "release-promote"])
+        self.assertEqual(sorted(root["jobs"]), ["registry-pr", "registry-prepare",
+                                                "release-draft", "release-promote"])
+        phases = {"release-draft": ("github-release", "draft"),
+                  "release-promote": ("github-release", "promote"),
+                  "registry-prepare": ("vcpkg-registry", "prepare"),
+                  "registry-pr": ("vcpkg-registry", "branch")}
+        listed = {e["job"] for e in gate.load_policy().publish_jobs}
         for job_id, job in root["jobs"].items():
             with self.subTest(job=job_id):
                 runs = [str(st["run"]) for st in job["steps"] if "run" in st]
+                destination, phase = phases[job_id]
                 self.assertEqual(runs, [f"python3 scripts/ci/stage.py publish --destination "
-                                        f"github-release --only {job_id.split('-')[1]}"])
+                                        f"{destination} --only {phase}"])
                 self.assertNotIn("env", {k: v for k, v in job.items()
                                          if "secrets" in str(v)})
+        prepare = root["jobs"]["registry-prepare"]
+        self.assertEqual(gate._granted(prepare["permissions"]), {"contents: read"})
+        self.assertNotIn("environment", prepare)
+        self.assertNotIn("secrets.", str(prepare))
+        self.assertNotIn("registry-prepare", listed)
+        self.assertIn("registry-pr", listed)
+        self.assertEqual(gate._granted(root["jobs"]["registry-pr"]["permissions"]),
+                         {"contents: write"})
         found = gate.check_workflow(REAL_WORKFLOWS / "stage-publish.yml",
                                     gate.ALLOWED_WORKFLOW_FILES, gate.load_policy())
         self.assertEqual([v.render() for v in found], [])

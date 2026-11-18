@@ -1,0 +1,58 @@
+# Violates P12 once (threat model 2026-11-18 RP-2, constraint 1; 0012 Story 04.0
+# Task 03): a credentialed publish job runs the toolchain phase `prepare`
+# (vcpkg x-add-version, a compiler, the consumer test) next to its token.
+# Otherwise the compliant fixture. Not a real workflow.
+name: stage-publish
+on:
+  workflow_call:
+    inputs:
+      tier:
+        type: string
+        required: true
+    secrets:
+      S3_ROLE:
+        required: false
+permissions:
+  contents: read
+jobs:
+  publish-staging-oidc:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: staging
+    # permissions: OIDC role assumption for the staging destination (ADR 0005 D9).
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 5
+        with:
+          persist-credentials: false
+      - name: Publish
+        run: python3 scripts/ci/stage.py publish --destination s3-staging
+        timeout-minutes: 5
+        env:
+          CI_PUBLISH_S3_ROLE: ${{ secrets.S3_ROLE }}
+  publish-release-repo-write:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: release
+    # permissions: release creation and the registry PR (ADR 0005 D6).
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 5
+        with:
+          persist-credentials: false
+      - name: Publish
+        run: python3 scripts/ci/stage.py publish --destination vcpkg-registry --only prepare
+        timeout-minutes: 5
+        env:
+          CI_PUBLISH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

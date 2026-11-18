@@ -9,7 +9,7 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
 | 01.0  | `libsmbios` install rules and whole-archive-safe package export | ✅ Complete | - |
 | 02.0  | Self-hosted vcpkg overlay/registry port for `smbios_c`           | ✅ Complete | 25 script tests; registry smoke (macOS); CI full tier green |
 | 03.0  | GitHub Releases prebuilt artifacts - pipeline `package` stage (ADR 0005) | 🔶 In progress (Tasks 01-02 complete; Task 03 partial: verifier delivered, H1 fixed, arch guard added; SC1 on all three OSes awaits Story 04.0 Task 02) | 55 + 57 script tests (`test_package_archive`, `test_verify_release_artifact`); CI run 44074901424 green on all 18 jobs; all five release checks pass on macOS x64 with the literal `pkg-config` command |
-| 04.0  | Release and publish automation - pipeline `verify`/`publish` stages (ADR 0005) | 🔶 In progress (Task 01 complete: root `project()` VERSION authoritative, `prepare_release.py`; RP-3 ruled 2026-11-18. Task 02 implemented: publish stage, `github-release` shipped `enabled: false`, RP-4 plumbing; criterion 1 blocked on S-1..S-8 read-back and Task 04) | 23 script tests (`test_prepare_release`); 47 publish tests (`test_publish_github_release`) plus RP-4 package, plan and policy cases |
+| 04.0  | Release and publish automation - pipeline `verify`/`publish` stages (ADR 0005) | 🔶 In progress (Task 01 complete: root `project()` VERSION authoritative, `prepare_release.py`; RP-3 ruled 2026-11-18. Task 02 implemented: publish stage, `github-release` shipped `enabled: false`, RP-4 plumbing; Task 03 implemented: registry branch via `registry-prepare` + `registry-pr`, `vcpkg-registry` shipped `enabled: false`, append-only registry lint; criteria 1 of Tasks 02/03 blocked on S-1..S-8 read-back, Task 04 and a real tag) | 24 script tests (`test_prepare_release`); 47 publish tests (`test_publish_github_release`) plus RP-4 package, plan and policy cases; Task 03: 25 + 16 + 10 new (`test_publish_vcpkg_registry`, `test_registry_update`, `test_registry_prepare`) plus history, plan, version-rule, allowlist and policy cases |
 
 **Legend:** ✅ Complete · 🔶 In progress / partial · ⬜ Not started
 
@@ -210,3 +210,46 @@ Tracks progress against [plan.md](plan.md). Updated as each story lands.
   - push the first tag (`v1.0.1`, per the 2026-11-18 ruling) only after Task 04 lands.
 
   The `release` environment's reviewers and self-review setting (RP-11) are part of S-5.
+
+- **2026-11-18 Story 04.0 Task 03 implemented (registry update); end-to-end proof blocked.** Details, and which constraint is enforced where: [Task 03 As built](04.0-release-and-publish-automation/03-registry-update-automation.md#as-built-2026-11-18). **No tag was pushed, and no branch, PR or release was created.** The new `vcpkg-registry` destination ships **`enabled: false`** (constraint 12).
+
+  **Three spec/threat-model conflicts, resolved for the threat model:**
+  1. **RP-2: the job is split.**
+     - `registry-prepare` holds `contents: read`, no environment and no credential, and is not in `publish_jobs.json`. It fetches `master`, sets `REF` = `manifest.commit`, runs `vcpkg x-add-version` (no overwrite switch) and the registry consumer test, and hands over three files by artifact ID with sha256 outputs. `stage.py` refuses this phase if any credential is set.
+     - `registry-pr` holds `contents: write` only and makes REST calls only. It re-reads the base through the Git Data API, recomputes the `git-tree` in Python, and accepts nothing but the one allowed change.
+     - The spec's validation-before-write is kept: it runs in the same run, in the unprivileged job.
+  2. **RP-9 and constraint 10: no PR is opened.** `registry-pr` creates the new branch `registry/v<version>`; an existing branch is a hard failure. It prints the compare URL, and **a human opens the PR**. No `open_registry_pr.py` exists. Task 03's success criterion 2 is recorded **as amended**: one deliberate manual step remains, because a `GITHUB_TOKEN` PR needs the setting S-6 forbids and would run no CI.
+  3. **RP-3 and the 1.0.1 ruling.** `1.0.0` stays frozen at `483562d4…`. The judge refuses re-registration. The overwrite switch appears in no script, workflow or documented procedure, and a test scans for it.
+
+  **Constraint 9: the append-only lint** in `check_vcpkg_registry.py`, run on every event:
+  - no `(version, port-version)` recorded by any commit reachable from `HEAD` may change or disappear;
+  - the `REF` inside each registered tree must be an ancestor of `master`;
+  - `REF` must equal its `v<version>` tag's commit.
+
+  The lint job now checks out with **`fetch-depth: 0`**; a shallow checkout or a missing `master` fails closed. Each deliberately broken scratch repository fails with one line; the real tree passes: `ok: vcpkg registry: smbios-c registry consistent; history: 1 recorded, 1 REF on master, 0 tagged`.
+
+  **One recorded exemption (for security review).** Story 02.0 rewrote the `1.0.0` entry twice before publication (`e63c659`, `e1e3add`), and both commits reached `master` through PR #17's merge commit. A strict history check is red on the real tree for that reason. `SUPERSEDED` lists exactly those two trees (`06cb80b5…`, `6a4f0020…`) by value, for `(1.0.0, 0)` only, and a test pins it. `HEAD` must still carry `483562d4…`. This is not RP-3's rejected option (b).
+
+  **Task 01's procedural defect is fixed: `master` is never red.** No reordering could satisfy "baseline equals VERSION in every commit". The release commit must carry the new version, but its registry entry records that commit as `REF`, so the entry can only land later.
+  - The baseline's `version_sites.json` rule is now `registered`: not newer than VERSION. So `prepare_release.py` no longer edits it, and `registry-prepare` moves it together with the entry, exactly the three files RP-2 names.
+  - The registry lint accepts **pending registration**: port newer than every entry, baseline equal to the newest entry.
+  - ADR 0005 D5/D6 carry a dated amendment, awaiting the architect's ratification.
+
+  **Constraint 8.** A pre-release tag gets no `registry-prepare`/`registry-pr` rows (`plan.py`, tested), and both phases also refuse it in code.
+
+  **Carried-forward items.**
+  - **Done:** `REF` reachability lint; `git-tree` overwrite lint (history-wide, plus `REF` equal to its tag's commit); installed-file allowlist (`vcpkg_registry_smoke.check_installed_files`, from the real arm64-osx package list; it would have caught the `lib/libsmbios.dylib` that the build from portfile `70f268a` shipped).
+  - **Left to Task 04:** wiring `vcpkg_registry_smoke.py` as a `verify`-stage step on three OSes, and the Windows `.dll` symbol check.
+
+  **Checked:** vcpkg 2026-07-27 accepts a tag as a registry `reference`. A scratch run resolved through the tag, and a missing tag failed. The consumer note is now in `docs/dev/vcpkg-registry.md` (RP-3).
+
+  **Unverifiable without the settings and a real tag:**
+  - the real `x-add-version`, cold build and Git Data API responses;
+  - the `registry-prepare` duration: its 30-minute budget is inventory C11's ceiling, on an **estimated** 15-minute median;
+  - the `.so`/`.dll` allowlists;
+  - S-6 (only drift-checked).
+
+  RP-11 is left open for the maintainer: `registry-pr` uses `environment: release`, a third approval per release.
+
+  **Gates (local, macOS):** see the Task 03 record.
+

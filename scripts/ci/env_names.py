@@ -135,6 +135,13 @@ NAMES: Dict[str, EnvName] = {
                 "destination cross-checks the manifest against it (RP-4, constraint 6)",
                 "matrix.binary_cache (ci.yml passes needs.build.outputs.binary_cache_<leg>)",
                 "the build configurations' binary-cache parameters"),
+        EnvName("CI_REGISTRY_PREPARED",
+                "the registry-prepare job's out-of-band hand-over: single-line JSON {base, "
+                "git_tree, files: {path: sha256}}; registry-pr checks the downloaded registry "
+                "files against it (0012 Story 04.0 Task 03; threat model RP-2)",
+                "matrix.prepared (stage-publish.yml: needs.registry-prepare.outputs."
+                "registry_prepared)",
+                "the prepare configuration's output parameter, via a snapshot dependency"),
         EnvName("CI_REPOSITORY", "owner/name of the repository a publish destination writes to",
                 "github.repository", "a literal parameter on the publish configuration"),
         EnvName("CI_WORKSPACE", "checkout root",

@@ -8,8 +8,16 @@ argument, ``X.Y.Z``, is written to:
 - the **authoritative** site of ``scripts/ci/version_sites.json`` (the root
   ``CMakeLists.txt`` ``project(... VERSION X.Y.Z ...)``);
 - every site whose rule is ``equal`` (today the port's
-  ``ports/smbios-c/vcpkg.json`` ``"version"`` and the registry's
-  ``versions/baseline.json`` ``default.smbios-c.baseline``).
+  ``ports/smbios-c/vcpkg.json`` ``"version"``).
+
+The registry baseline (``versions/baseline.json``) is a ``registered`` site
+since 0012 Story 04.0 Task 03 and is **not** edited here: it must name a
+registered entry (threat model RP-3), and the new entry's ``REF`` is the release
+commit itself, so the publish stage's ``registry-prepare`` job moves the
+baseline together with that entry, on the ``registry/v<version>`` branch. The
+release commit is therefore green: the lint ``registry`` step reports the port
+as *pending registration*, and ``check_versions.py`` accepts a baseline that
+trails the authoritative value.
 
 ``derived`` sites (``SMBIOS_C_VERSION``, ``LIBSMBIOS_VERSION``) are never
 touched: they reference ``${PROJECT_VERSION}`` and follow the authoritative
@@ -19,10 +27,10 @@ check, not repaired here.
 **What it never does** (threat model 2026-11-18, Task 01 requirement 3): it
 never commits, creates or pushes a tag, runs ``vcpkg x-add-version``, or
 edits ``versions/s-/smbios-c.json``, ``port-version`` or the portfile
-``REF``. Tagging is a human action; the registry entry is Story 04.0 Task 03
-(until then, ``docs/dev/vcpkg-registry.md``'s manual procedure), and the lint
-``registry`` step reports the drift until that entry exists. The only child
-process it starts is ``git status`` (read-only).
+``REF``. Tagging is a human action; the registry entry is the publish
+stage's ``registry-prepare``/``registry-pr`` jobs (Story 04.0 Task 03,
+``docs/dev/vcpkg-registry.md``). The only child process it starts is ``git
+status`` (read-only).
 
 **Pre-releases are refused** (threat-model RP-5, constraint 8). The argument
 is validated against the constraint-5 tag regex without its ``v``,

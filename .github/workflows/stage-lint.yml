@@ -42,6 +42,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 3
         with:
+          # Full history and tags: the `registry` step's append-only check
+          # reads every past versions/ file, REF ancestry of origin/master and
+          # the v<version> tags (0012 Story 04.0 Task 03, constraint 9). A
+          # shallow checkout fails that step closed.
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Lint stage

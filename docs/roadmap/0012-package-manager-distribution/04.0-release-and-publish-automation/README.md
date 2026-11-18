@@ -1,7 +1,7 @@
 # Story 04.0 - Release and Publish Automation
 
 **Parent milestone:** [plan.md](../plan.md)
-**Status:** 🔶 In progress (Task 01 complete, 2026-11-17; Task 02 implemented 2026-11-18, end-to-end proof blocked on settings S-1..S-8 and Task 04)
+**Status:** 🔶 In progress (Task 01 complete, 2026-11-17; Tasks 02 and 03 implemented 2026-11-18, end-to-end proof blocked on settings S-1..S-8, Task 04 and a real tag)
 **Depends on:** Stories 01.0, 02.0 and 03.0 (it automates their manual steps); milestone 0014 Stories 01.0-03.0 and Story 04.0 Task 02 (the pipeline foundation and the tier rows, per [ADR 0005](/docs/adr/0005-unified-build-package-publish-pipeline.md))
 
 ## Scope
@@ -10,7 +10,7 @@ Stories 01.0-03.0 produce the packaging pieces. On their own, they leave the pat
 
 - a consistent version everywhere;
 - a published GitHub Release whose archives are the verified bytes;
-- a registry PR;
+- a registry branch, from which a maintainer opens the PR (threat model RP-9);
 - a post-publish check.
 
 Origin: [docs/reviews/milestone-0012-packaging-automation-2026-11-12.md](/docs/reviews/milestone-0012-packaging-automation-2026-11-12.md) (findings H1, H2, M1-M3, L1, L2).
@@ -23,7 +23,7 @@ Workflow conventions are not restated here. Pins, permissions, step shape, repor
 |----|----------|--------|--------|
 | 01 | [Version sites and release preparation](01-version-source-and-release-prep.md) | ✅ Complete (2026-11-17) | 02 |
 | 02 | [Publish stage: gated draft, upload, promote](02-release-pipeline-draft-upload-publish.md) | 🔶 Implemented (2026-11-18); criterion 1 blocked on S-1..S-8 read-back and Task 04 | 03 |
-| 03 | [Registry update in the publish stage](03-registry-update-automation.md) | ⬜ Not started | 04 |
+| 03 | [Registry update in the publish stage](03-registry-update-automation.md) | 🔶 Implemented (2026-11-18); criterion 1 blocked on S-1..S-8 read-back, Task 04 and a real tag; criterion 2 amended (RP-9: a human opens the PR) | 04 |
 | 04 | [Verify stage and post-publish check](04-post-publish-verification.md) | ⬜ Not started | 05 |
 | 05 | [Publish destination plug-ins and the S3 staging example](05-publish-destination-plugins.md) | ⬜ Not started | - |
 
@@ -32,4 +32,4 @@ Workflow conventions are not restated here. Pins, permissions, step shape, repor
 - **Blocking maintainer decisions** (ADR 0005 "Open questions"; the review's "Unknowns"): the licence, `.pc` relocatability, whether the CLI ships in the tarball, and registry hosting. Task 01 records each one in `status.md` before any stage is implemented. The version source is **already decided** (ADR 0005 D5).
 - **Tested equals shipped.** `verify` and `publish` act only on the files listed in the package stage's `manifest.json`, and refuse any digest mismatch.
 - **Publish runs only on a `v*` tag, after `verify` in the same run.** Its permissions and credential rules are ADR 0005 D6 (enforced by P8/P12).
-- **Registry changes land through a PR that a human merges**, never through an unreviewed push.
+- **Registry changes land through a PR that a human merges**, never through an unreviewed push. Since Task 03 (threat model RP-9) the automation creates the branch `registry/v<version>` and a human also **opens** the PR.

@@ -1,6 +1,7 @@
-# Reusable `publish` stage, release tier (milestone 0012 Story 04.0 Task 02;
-# ADR 0005 D6, D8, D9). Two jobs, both permission class repo-write, both in the
-# `release` environment, both guarded to a v* tag push:
+# Reusable `publish` stage, release tier (milestone 0012 Story 04.0 Tasks 02-03;
+# ADR 0005 D6, D8, D9). Four jobs, all guarded to a v* tag push. The GitHub
+# Release: two jobs, both permission class repo-write, both in the `release`
+# environment:
 #
 #   release-draft:   stage.py publish --destination github-release --only draft
 #     creates ONE draft release (target_commitish = the run's commit), uploads
@@ -34,6 +35,24 @@
 # and publish fails closed. The github-release registry entry also ships
 # `enabled: false` until settings S-1..S-8 are read back (constraint 12).
 #
+# The registry update (Task 03; threat model RP-2, RP-9, constraints 1, 5, 8-10),
+# final release tags only (`registry` input: plan.py gives a pre-release tag
+# no registry rows):
+#
+#   registry-prepare: stage.py publish --destination vcpkg-registry --only prepare
+#     contents: read, NO environment, NO credential, not in publish_jobs.json.
+#     The only job that runs git, vcpkg and a compiler: fetches master, sets the
+#     port REF to manifest.commit, runs vcpkg x-add-version (never overwriting)
+#     and the registry consumer test, then uploads exactly three files and
+#     exports their sha256, the base commit and the git-tree as job outputs.
+#     No cache (P15), so vcpkg builds cold.
+#   registry-pr: stage.py publish --destination vcpkg-registry --only branch
+#     repo-write, contents: write only (no pull-requests: write, RP-9). REST
+#     only: re-reads the base through the Git Data API, accepts nothing but the
+#     one allowed change, then creates the NEW branch registry/v<version>
+#     (create-only). It never opens, approves or merges a PR and never writes
+#     master: the maintainer opens the PR, which then gets normal CI.
+#
 # Inputs reach the step only through a one-entry matrix, because policy P10
 # lets env: read matrix.* but not inputs.* (the same pattern as
 # stage-package.yml). Every value is re-validated by stage.py.
@@ -59,6 +78,11 @@ on:
         type: string
         required: false
         default: ''
+      registry:
+        description: Whether the plan has registry rows (a final v<X.Y.Z> tag; never a pre-release, constraint 8)
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -172,4 +196,135 @@ jobs:
           CI_MANIFEST_SHA256: ${{ matrix.manifest_sha256 }}
           CI_VERIFIED_MANIFEST_SHA256: ${{ matrix.verified_manifest_sha256 }}
           CI_BUILD_BINARY_CACHE: ${{ matrix.binary_cache }}
+          CI_PUBLISH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Unprivileged (RP-2): no environment, no secret, contents: read. Everything
+  # that executes third-party or toolchain code in the registry update runs
+  # here and hands over files by artifact ID plus sha256 job outputs.
+  registry-prepare:
+    name: publish (registry-prepare)
+    needs: release-promote
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && inputs.registry
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - manifest_sha256: ${{ inputs.manifest_sha256 }}
+            verified_manifest_sha256: ${{ inputs.verified_manifest_sha256 }}
+            binary_cache: ${{ inputs.binary_cache }}
+    outputs:
+      registry_prepared: ${{ steps.prepare.outputs.registry_prepared }}
+      registry_artifact_id: ${{ steps.upload-registry.outputs.artifact-id }}
+    env:
+      CI_JOB: registry-prepare
+    steps:
+      # Full history: the base is a credential-less fetch of master, and the
+      # registry lint run on the prepared change checks the append-only
+      # history, REF ancestry and the v<version> tag (constraint 9).
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download dist
+        id: download-dist
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with:
+          artifact-ids: ${{ inputs.dist_artifact_id }}
+          path: ${{ runner.temp }}/artifacts/dist
+          merge-multiple: true
+
+      # Refuses if any credential is present (RP-2). Cold vcpkg build of the
+      # port and its Boost dependencies (no cache in this file, P15); the job
+      # stays within inventory C11's 30-minute ceiling (step_budgets.json).
+      - name: Prepare
+        id: prepare
+        run: python3 scripts/ci/stage.py publish --destination vcpkg-registry --only prepare
+        timeout-minutes: 24
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+          CI_MANIFEST_SHA256: ${{ matrix.manifest_sha256 }}
+          CI_VERIFIED_MANIFEST_SHA256: ${{ matrix.verified_manifest_sha256 }}
+          CI_BUILD_BINARY_CACHE: ${{ matrix.binary_cache }}
+
+      # Exactly the three changed files, literal paths (P15).
+      - name: Upload registry hand-off
+        id: upload-registry
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        timeout-minutes: 2
+        with:
+          name: registry
+          path: |
+            ${{ runner.temp }}/artifacts/registry/ports/smbios-c/portfile.cmake
+            ${{ runner.temp }}/artifacts/registry/versions/baseline.json
+            ${{ runner.temp }}/artifacts/registry/versions/s-/smbios-c.json
+          include-hidden-files: false
+          if-no-files-found: error
+          retention-days: 3
+
+  registry-pr:
+    name: publish (registry-pr)
+    needs: registry-prepare
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && inputs.registry
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release
+    # permissions: create the new branch registry/v<version> through the Git Data API (blobs, tree, commit, ref); never a PR, never master (threat model RP-9, constraint 10).
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        include:
+          - manifest_sha256: ${{ inputs.manifest_sha256 }}
+            verified_manifest_sha256: ${{ inputs.verified_manifest_sha256 }}
+            binary_cache: ${{ inputs.binary_cache }}
+            prepared: ${{ needs.registry-prepare.outputs.registry_prepared }}
+    env:
+      CI_JOB: registry-pr
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
+        with:
+          persist-credentials: false
+
+      - name: Download dist
+        id: download-dist
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with:
+          artifact-ids: ${{ inputs.dist_artifact_id }}
+          path: ${{ runner.temp }}/artifacts/dist
+          merge-multiple: true
+
+      # The hand-over, by the registry-prepare job's artifact ID; each file is
+      # checked against that job's sha256 outputs before it is parsed.
+      - name: Download registry hand-off
+        id: download-registry
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with:
+          artifact-ids: ${{ needs.registry-prepare.outputs.registry_artifact_id }}
+          path: ${{ runner.temp }}/artifacts/registry
+          merge-multiple: true
+
+      # REST only: no git, vcpkg or compiler in this job (constraint 1).
+      - name: Publish
+        id: publish
+        run: python3 scripts/ci/stage.py publish --destination vcpkg-registry --only branch
+        timeout-minutes: 8
+        env:
+          CI_TEMP_DIR: ${{ runner.temp }}
+          CI_MANIFEST_SHA256: ${{ matrix.manifest_sha256 }}
+          CI_VERIFIED_MANIFEST_SHA256: ${{ matrix.verified_manifest_sha256 }}
+          CI_BUILD_BINARY_CACHE: ${{ matrix.binary_cache }}
+          CI_REGISTRY_PREPARED: ${{ matrix.prepared }}
           CI_PUBLISH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

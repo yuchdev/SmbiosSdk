@@ -7,7 +7,13 @@ listed version site against the one authoritative value, the root
 
 - ``equal`` sites must hold a literal equal to the authoritative value;
 - ``derived`` sites must reference ``${PROJECT_VERSION}`` (or
-  ``${CMAKE_PROJECT_VERSION}``). While the root VERSION does not exist yet
+  ``${CMAKE_PROJECT_VERSION}``).
+- ``registered`` sites (0012 Story 04.0 Task 03: the registry baseline) must
+  hold a literal **not newer** than the authoritative value. The registry
+  lint (``check_vcpkg_registry.py``) additionally requires it to name the
+  newest registered entry, so it equals the authoritative value except
+  between a release commit and the merge of its ``registry/v<version>``
+  branch, whose entry can only be created after the release commit exists. While the root VERSION does not exist yet
   (it is milestone 0012's product-build change), the file's
   ``interim_authoritative`` site stands in for it and literals are accepted,
   so with today's single site the check passes trivially (plan SC3
@@ -54,7 +60,7 @@ from reporters import Reporter, get_reporter  # noqa: E402
 REPO_ROOT: Final = Path(_HERE).resolve().parents[1]
 SITES_FILE: Final = Path(_HERE) / "version_sites.json"
 LABEL: Final = "versions"
-RULES: Final = ("equal", "derived")
+RULES: Final = ("equal", "derived", "registered")
 #: A version value: X.Y.Z with an optional pre-release suffix.
 VERSION: Final = re.compile(r"^\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[0-9A-Za-z.]{1,40})?$")
 #: A release tag (ADR 0005 D5).
@@ -90,6 +96,12 @@ def _show(value: Optional[str]) -> str:
     if value.startswith("${"):
         return "another variable"
     return value if _SHOW.match(value) else "<invalid>"
+
+
+def _numeric(version: str) -> Tuple[int, int, int]:
+    """``X.Y.Z`` of a :data:`VERSION` value as integers (a suffix is ignored)."""
+    x, y, z = version.split("-", 1)[0].split(".")
+    return int(x), int(y), int(z)
 
 
 def discrepancy(what: str, expected: Optional[str], actual: Optional[str]) -> str:
@@ -229,6 +241,11 @@ def check(repo_root: Path, sites_file: Path = SITES_FILE, tag: Optional[str] = N
             continue
         if s.rule == "derived" and not interim and actual is not None and VERSION.match(actual):
             problems.append(discrepancy(s.site, DERIVED, actual))  # hand-edited literal (D5)
+        elif s.rule == "registered":
+            if not (actual is not None and VERSION.match(actual)
+                    and _numeric(actual) <= _numeric(value)):
+                problems.append(f"{s.site}: expected at most {_show(value)} (registered "
+                                f"versions only) -> actual {_show(actual)}"[:160])
         elif actual != value:
             problems.append(discrepancy(s.site, value, actual))
 

@@ -95,9 +95,8 @@ class BumpTests(_Tree):
         before = self.snapshot()
         rc, lines = self.prepare("7.8.9")
         self.assertEqual(rc, 0, lines)
-        self.assertEqual(lines[0], f"ok: prepare release: {self.start} -> 7.8.9, 3 files "
-                                   "(CMakeLists.txt, ports/smbios-c/vcpkg.json, "
-                                   "versions/baseline.json)")
+        self.assertEqual(lines[0], f"ok: prepare release: {self.start} -> 7.8.9, 2 files "
+                                   "(CMakeLists.txt, ports/smbios-c/vcpkg.json)")
         self.assertEqual(lines[1], "ok: versions: 7.8.9 (root project() VERSION), 4 sites")
         outcome = cv.check(self.root, self.sites)
         self.assertEqual((outcome.authority, outcome.problems), ("7.8.9", []))
@@ -109,8 +108,10 @@ class BumpTests(_Tree):
         port_before = json.loads(before["ports/smbios-c/vcpkg.json"])
         port_before["version"] = "7.8.9"
         self.assertEqual(self.json_at("ports/smbios-c/vcpkg.json"), port_before)
-        base = self.json_at("versions/baseline.json")
-        self.assertEqual(base["default"]["smbios-c"], {"baseline": "7.8.9", "port-version": 0})
+        # 0012 Story 04.0 Task 03: the registry baseline is a `registered` site,
+        # moved only by registry-prepare together with the new entry, so a bump
+        # leaves it byte-identical (and check_versions accepts it trailing).
+        self.assertEqual(after["versions/baseline.json"], before["versions/baseline.json"])
         root_before = before["CMakeLists.txt"].decode()
         self.assertEqual((self.root / "CMakeLists.txt").read_text(encoding="utf-8"),
                          root_before.replace(f"VERSION {self.start} LANGUAGES",
@@ -171,8 +172,7 @@ class IdempotencyTests(_Tree):
         # ... and a re-run writes only the remaining two files.
         rc, lines = self.prepare("3.0.0")
         self.assertEqual(rc, 0, lines)
-        self.assertIn("-> 3.0.0, 2 files (ports/smbios-c/vcpkg.json, versions/baseline.json)",
-                      lines[0])
+        self.assertIn("-> 3.0.0, 1 files (ports/smbios-c/vcpkg.json)", lines[0])
 
 
 class RefusalTests(_Tree):
@@ -219,16 +219,28 @@ class RefusalTests(_Tree):
         before = self.snapshot()
         rc, lines = self.prepare("4.0.0", dirty=lambda _r, files: [files[-1]])
         self.assertEqual(rc, 2)
-        self.assertIn("uncommitted changes in versions/baseline.json", lines[0])
+        self.assertIn("uncommitted changes in ports/smbios-c/vcpkg.json", lines[0])
         self.assertEqual(self.snapshot(), before)
 
     def test_UneditableSiteAbortsBeforeAnyWrite(self) -> None:
         # The root CMakeLists.txt is planned first; the bad JSON last. Nothing is written.
+        port = self.root / "ports" / "smbios-c" / "vcpkg.json"
+        port.write_text(json.dumps(self.json_at("ports/smbios-c/vcpkg.json")), encoding="utf-8")
+        self.assertRefused("5.0.0", "canonical 2-space form")
+        data = self.json_at("ports/smbios-c/vcpkg.json")
+        data["version"] = 1
+        port.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        self.assertRefused("5.0.0", "smbios-c port version (ports/smbios-c/vcpkg.json)")
+
+    def test_RegistryBaselineIsNeverATarget(self) -> None:
+        """0012 Story 04.0 Task 03: even a non-canonical baseline is left alone, not refused."""
         base = self.root / "versions" / "baseline.json"
         base.write_text(json.dumps(self.json_at("versions/baseline.json")), encoding="utf-8")
-        self.assertRefused("5.0.0", "canonical 2-space form")
-        base.write_text('{"default": {"smbios-c": {"baseline": 1}}}', encoding="utf-8")
-        self.assertRefused("5.0.0", "smbios-c registry baseline (versions/baseline.json)")
+        before = base.read_bytes()
+        rc, lines = self.prepare("5.0.0")
+        self.assertEqual(rc, 0, lines)
+        self.assertNotIn("versions/baseline.json", lines[0])
+        self.assertEqual(base.read_bytes(), before)
 
     def test_EqualSiteHoldingAVariableIsRefused(self) -> None:
         sites = json.loads(self.sites.read_text(encoding="utf-8"))
@@ -274,7 +286,8 @@ class SingleSiteEditTests(_Tree):
             ("ports/smbios-c/vcpkg.json", f'"version": "{s}"', '"version": "9.9.9"',
              f"smbios-c port version: expected {s} -> actual 9.9.9"),
             ("versions/baseline.json", f'"baseline": "{s}"', '"baseline": "9.9.9"',
-             f"smbios-c registry baseline: expected {s} -> actual 9.9.9"),
+             f"smbios-c registry baseline: expected at most {s} (registered versions only) "
+             "-> actual 9.9.9"),
         )
         pristine = self.snapshot()
         for rel, old, new, line in cases:
@@ -305,8 +318,7 @@ class GitTests(_Tree):
         rc = pr.run(self.root, "6.0.0", sites_file=self.sites, out=out)
         self.assertEqual(rc, 0, out.getvalue())
         self.assertEqual(pr.git_dirty(self.root, list(SITE_FILES)),
-                         ["CMakeLists.txt", "ports/smbios-c/vcpkg.json",
-                          "versions/baseline.json"])
+                         ["CMakeLists.txt", "ports/smbios-c/vcpkg.json"])
 
     def test_UnstagedOrStagedEditOfATargetIsRefused(self) -> None:
         port = self.root / "ports" / "smbios-c" / "vcpkg.json"
@@ -354,7 +366,7 @@ class BoundaryTests(unittest.TestCase):
         tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
         literals = {n.value for n in ast.walk(tree)
                     if isinstance(n, ast.Constant) and isinstance(n.value, str)}
-        for word in ("tag", "push", "commit", "add", "x-add-version", "--overwrite-version",
+        for word in ("tag", "push", "commit", "add", "x-add-version", "--" + "overwrite-version",
                      "fetch", "reset", "checkout"):
             self.assertNotIn(word, literals)
         subprocess_calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)

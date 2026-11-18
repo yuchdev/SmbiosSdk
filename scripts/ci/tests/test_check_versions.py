@@ -147,6 +147,51 @@ class RootAuthorityTests(_Tree):
         self.assertIn("(+5 more)", lines)
 
 
+class RegisteredRuleTests(_Tree):
+    """Rule ``registered`` (0012 Story 04.0 Task 03): the registry baseline may trail, never lead.
+
+    Type: unit (normal, edge, invalid input). Scenario: between a release
+    commit and the merge of its ``registry/v<version>`` branch the baseline
+    still names the previous registered version; that must keep ``master``
+    green, while a baseline ahead of the source must still fail. On failure
+    first check: the ``registered`` branch in ``check_versions.check``.
+    """
+
+    def baseline(self, value: object) -> Tuple[int, List[str]]:
+        self.write_sites([{"site": "SMBIOS_C_VERSION", "file": "smbios_c/CMakeLists.txt",
+                           "extractor": "cmake_set:SMBIOS_C_VERSION", "rule": "derived"},
+                          {"site": "smbios-c registry baseline", "file": "baseline.json",
+                           "extractor": "json_key:default.smbios-c.baseline",
+                           "rule": "registered"}], interim=None)
+        (self.root / "baseline.json").write_text(json.dumps(
+            {"default": {"smbios-c": {"baseline": value}}}), encoding="utf-8")
+        self.files("project(p VERSION 1.2.0)\n", "set(SMBIOS_C_VERSION ${PROJECT_VERSION})\n")
+        return self.run_check()
+
+    def test_EqualOrTrailingBaselinePasses(self) -> None:
+        for value in ("1.2.0", "1.1.9", "1.0.0", "0.9.10"):
+            with self.subTest(value=value):
+                rc, lines = self.baseline(value)
+                self.assertEqual(rc, 0, lines)
+                self.assertIn("1.2.0 (root project() VERSION), 2 sites", lines[0])
+
+    def test_LeadingBaselineFails(self) -> None:
+        for value in ("1.2.1", "1.10.0", "2.0.0"):
+            with self.subTest(value=value):
+                rc, lines = self.baseline(value)
+                self.assertEqual(rc, 1, lines)
+                self.assertIn("smbios-c registry baseline: expected at most 1.2.0 (registered "
+                              f"versions only) -> actual {value}", "\n".join(lines))
+
+    def test_MissingOrMalformedBaselineFails(self) -> None:
+        for value in (None, 7, "x.y.z", "::error::"):
+            with self.subTest(value=value):
+                rc, lines = self.baseline(value)
+                self.assertEqual(rc, 1, lines)
+                self.assertNotIn("::error::", "\n".join(lines))
+                self.assertIn("expected at most 1.2.0", "\n".join(lines))
+
+
 class TagTests(_Tree):
     """``--tag``: v* tags must equal the authoritative version; other tags are not releases."""
 

@@ -19,7 +19,9 @@ model CR-6/CR-8: single-line JSON, random per-call delimiter):
     defined`` for it. ``publish`` rows come
     only from ``scripts/ci/publish_jobs.json``: ``release``-tier jobs on a
     ``tag`` event, ``staging``-tier jobs on a push to ``refs/heads/master``,
-    nothing on any other event. ``publish`` (defined by Story 04.0 Task 02)
+    nothing on any other event; a pre-release tag ``v<X.Y.Z>-<pre>`` gets no
+    ``registry-prepare``/``registry-pr`` rows (Story 04.0 Task 03, threat model
+    constraint 8). ``publish`` (defined by Story 04.0 Task 02)
     also counts as ``not run: stage not defined`` while ``verify`` is not
     defined: it may only run after the same run's verify (ADR 0005 D6), so
     without verify it gets no row at all (fail closed).
@@ -261,11 +263,32 @@ def runner_label(leg: str, data: PlanData) -> str:
     return label
 
 
+def final_release_tag(ref: str) -> bool:
+    """Whether ``ref`` is ``refs/tags/v<X.Y.Z>`` with no ``-<pre>`` suffix (constraint 8).
+
+    Anything that is not exactly the release grammar of ``publish_inputs.TAG``
+    counts as not final (fail closed: no registry rows).
+    """
+    import publish_inputs
+    if not ref.startswith("refs/tags/"):
+        return False
+    m = publish_inputs.TAG.fullmatch(ref[len("refs/tags/"):])
+    return m is not None and m.group(2) is None
+
+
 def _publish_rows(event: str, ref: str, data: PlanData) -> List[Dict[str, str]]:
     """Return the publish rows of this event: release tier on ``tag``, staging on a master push.
 
+    An entry with ``"prerelease": false`` (``registry-pr``, 0012 Story 04.0 Task
+    03) gets no row on a pre-release tag ``v<X.Y.Z>-<pre>`` (threat model
+    2026-11-18 constraint 8: pre-releases never touch the registry), and
+    neither does its ``prepare_job`` (``registry-prepare``, the unprivileged
+    job that is deliberately not a ``publish_jobs.json`` entry, RP-2). When the
+    entry gets a row, its ``prepare_job`` row comes first.
+
     Raises:
-        PlanError: A ``publish_jobs.json`` entry has a malformed job or tier.
+        PlanError: A ``publish_jobs.json`` entry has a malformed job, tier,
+            ``prerelease`` flag or ``prepare_job``.
     """
     if event == "tag":
         tier: Optional[str] = "release"
@@ -273,14 +296,24 @@ def _publish_rows(event: str, ref: str, data: PlanData) -> List[Dict[str, str]]:
         tier = "staging"
     else:
         tier = None
+    final = event == "tag" and final_release_tag(ref)
     rows: List[Dict[str, str]] = []
     for entry in data.publish_jobs:
         job, entry_tier = entry.get("job"), entry.get("tier")
+        prerelease, prepare = entry.get("prerelease", True), entry.get("prepare_job")
         if not (isinstance(job, str) and _JOB_NAME.fullmatch(job)
-                and entry_tier in PUBLISH_TIERS):
-            raise PlanError("publish_jobs.json: a job entry needs a job name and a known tier")
-        if tier is not None and entry_tier == tier:
-            rows.append({"job": job, "tier": tier})
+                and entry_tier in PUBLISH_TIERS and isinstance(prerelease, bool)
+                and (prepare is None or (isinstance(prepare, str)
+                                         and _JOB_NAME.fullmatch(prepare)))):
+            raise PlanError("publish_jobs.json: a job entry needs a job name, a known tier, "
+                            "and a boolean prerelease and job-name prepare_job if present")
+        if tier is None or entry_tier != tier:
+            continue
+        if event == "tag" and not prerelease and not final:
+            continue  # constraint 8: no registry row (nor its prepare row) for a pre-release
+        if prepare is not None:
+            rows.append({"job": prepare, "tier": tier})
+        rows.append({"job": job, "tier": tier})
     return rows
 
 
